@@ -226,14 +226,17 @@ html[data-fe-panel-open] [data-phase=active] {
 }
 .fe-mmd .fe-mermaid { margin: 0; }
 .fe-toggle {
-  display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; padding: 0;
-  border: none; border-radius: 6px;
-  background: transparent; color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px;
+  background: transparent; color: var(--dsw-alias-label-primary);
+  cursor: pointer; flex: none;
 }
-.fe-toggle:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.fe-toggle:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.fe-toggle svg { flex: none; }
 .fe-toggle-on { color: var(--dsw-alias-brand-primary); }
+/* 隐藏会话下载按钮（Session Log 下载胶囊） */
+.nL4_yW_sessionLogButton { display: none !important; }
 .fe-hl { tab-size: 4; }
 .fe-hl .fe-tok-c { color: var(--fe-hl-comment, #7f848e); font-style: italic; }
 .fe-hl .fe-tok-s { color: var(--fe-hl-string, #98c379); }
@@ -1558,8 +1561,9 @@ html[data-fe-panel-open] [data-phase=active] {
 				{ name: 'shell.overlay', id: 'file-explorer', order: 90, label: '文件资源管理器' },
 				(props) => react.createElement(ExplorerPanel, props),
 			));
-			slots.inject('conversation.session.header.actions', () => slots.register(
-				{ name: 'conversation.session.header.actions', id: 'file-explorer-toggle', order: 30, label: '文件资源管理器' },
+			// 标题栏入口：与 Session Log 同区（header.utilities），order 10 排在其后
+			slots.inject('conversation.session.header.utilities', () => slots.register(
+				{ name: 'conversation.session.header.utilities', id: 'file-explorer-toggle', order: 10, label: '文件资源管理器' },
 				(props) => react.createElement(ToggleButton, props),
 			));
 		}
