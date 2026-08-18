@@ -1497,7 +1497,7 @@ html[data-fe-panel-open] [data-phase=active] {
 					react.createElement('button', { className: 'fe-iconbtn', title: '刷新', onClick: refresh }, react.createElement(Icon, { name: 'refresh', size: 14 })),
 					react.createElement('button', {
 						className: 'fe-iconbtn' + (autoWatch ? ' fe-iconbtn-on' : ''),
-						title: autoWatch ? '自动刷新：开（检测到新增/删除文件后自动更新）' : '自动刷新：关',
+						title: autoWatch ? '自动刷新：开' : '自动刷新：关',
 						onClick: () => setAutoWatch((v) => !v),
 					}, react.createElement(Icon, { name: autoWatch ? 'eye' : 'eyeOff', size: 14 })),
 					react.createElement('button', { className: 'fe-iconbtn' + (editor && editor.editing ? ' fe-iconbtn-on' : ''), title: '编辑', onClick: onEditClick }, react.createElement(Icon, { name: 'edit', size: 14 })),
