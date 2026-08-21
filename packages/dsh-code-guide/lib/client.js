@@ -127,6 +127,11 @@ html[data-cg-panel-open] [data-phase=active] {
 }
 .cg-card:hover { border-color: var(--dsw-alias-brand-primary); }
 .cg-card-on { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
+.cg-card-flash { animation: cg-card-flash 1s ease-out 1; }
+@keyframes cg-card-flash {
+  0% { background: rgba(59, 130, 246, .28); border-color: var(--dsw-alias-brand-primary); }
+  100% { background: transparent; }
+}
 .cg-card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .cg-card-name { font-weight: 700; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; color: var(--dsw-alias-brand-primary); word-break: break-all; }
 .cg-card-lines { flex: none; color: var(--dsw-alias-label-secondary); font-size: 11px; }
@@ -186,6 +191,25 @@ html[data-cg-panel-open] [data-phase=active] {
 }
 .cg-mermaid svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
 .cg-mermaid g.node:hover { filter: brightness(1.12); }
+.cg-graph { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.cg-graph-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; flex: none;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+.cg-gbtn {
+  padding: 2px 10px; flex: none;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
+  font-size: 12px; cursor: pointer;
+}
+.cg-gbtn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.cg-graph-hint { margin-left: auto; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.cg-graph-viewport {
+  flex: 1; overflow: auto; position: relative;
+  user-select: none; touch-action: none; cursor: grab;
+}
+.cg-graph-viewport .cg-mermaid { margin: 8px; }
 .cg-mermaid-pending { color: var(--dsw-alias-label-secondary); font-size: 12px; padding: 6px 4px; }
 .cg-mermaid-error { color: var(--dsw-alias-state-error-primary); font-size: 12px; margin-bottom: 6px; }
 .cg-mermaid-src {
@@ -315,6 +339,67 @@ html[data-cg-panel-open] [data-phase=active] {
 			return out;
 		};
 
+		// 调用图视图:工具栏(放大/缩小/复位/复制)+ 滚轮缩放 + 拖拽平移
+		const GraphView = (props) => {
+			const [view, setView] = react.useState({ scale: 1, tx: 0, ty: 0 });
+			const [copied, setCopied] = react.useState(false);
+			const dragRef = react.useRef(null);
+			const vpRef = react.useRef(null);
+			const reset = () => setView({ scale: 1, tx: 0, ty: 0 });
+			const zoomBy = (d) => setView((v) => ({ ...v, scale: Math.max(0.4, Math.min(4, +(v.scale + d).toFixed(2))) }));
+			react.useEffect(() => {
+				const el = vpRef.current;
+				if (!el) return;
+				const onWheel = (e) => {
+					e.preventDefault();
+					zoomBy(e.deltaY < 0 ? 0.15 : -0.15);
+				};
+				el.addEventListener('wheel', onWheel, { passive: false });
+				return () => el.removeEventListener('wheel', onWheel);
+			}, []);
+			const onPointerDown = (e) => {
+				dragRef.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+				if (vpRef.current) vpRef.current.setPointerCapture(e.pointerId);
+			};
+			const onPointerMove = (e) => {
+				const d = dragRef.current;
+				if (!d) return;
+				setView((v) => ({ ...v, tx: d.tx + (e.clientX - d.x), ty: d.ty + (e.clientY - d.y) }));
+			};
+			const onPointerUp = () => { dragRef.current = null };
+			const onCopy = () => {
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					navigator.clipboard.writeText(String(props.code)).then(() => {
+						setCopied(true);
+						setTimeout(() => setCopied(false), 1500);
+					}).catch(() => {});
+				}
+			};
+			return react.createElement('div', { className: 'cg-graph' },
+				react.createElement('div', { className: 'cg-graph-toolbar' },
+					react.createElement('button', { className: 'cg-gbtn', title: '放大', onClick: () => zoomBy(0.2) }, '＋'),
+					react.createElement('button', { className: 'cg-gbtn', title: '缩小', onClick: () => zoomBy(-0.2) }, '－'),
+					react.createElement('button', { className: 'cg-gbtn', title: '复位视图', onClick: reset }, '复位'),
+					react.createElement('button', { className: 'cg-gbtn', title: '复制 mermaid 源码', onClick: onCopy }, copied ? '已复制' : '复制 mermaid'),
+					react.createElement('span', { className: 'cg-graph-hint' }, '点击节点定位函数 · 滚轮缩放 · 拖动平移'),
+				),
+				react.createElement('div', {
+					className: 'cg-graph-viewport',
+					ref: vpRef,
+					onPointerDown: onPointerDown,
+					onPointerMove: onPointerMove,
+					onPointerUp: onPointerUp,
+					onPointerLeave: onPointerUp,
+				},
+					react.createElement('div', {
+						style: { transform: 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.scale + ')', transformOrigin: '0 0', display: 'inline-block', minWidth: '100%' },
+					},
+						react.createElement(CallGraphBlock, { code: props.code, onNodeClick: props.onNodeClick }),
+					),
+				),
+			);
+		};
+
 		// ---------- shared store ----------
 		const store = {
 			open: false,
@@ -420,6 +505,9 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 变量闪烁: { name, funcIndex, seq }
 			const [flash, setFlash] = react.useState(null);
 			const flashTimerRef = react.useRef(null);
+			// 解读卡片闪烁(点击代码行时): { idx, seq }
+			const [cardFlash, setCardFlash] = react.useState(null);
+			const cardFlashTimerRef = react.useRef(null);
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
@@ -459,6 +547,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			}, [s.width]);
 			react.useEffect(() => () => {
 				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
+				if (cardFlashTimerRef.current !== null) clearTimeout(cardFlashTimerRef.current);
 			}, []);
 
 			const loadChildren = (path) => {
@@ -492,7 +581,9 @@ html[data-cg-panel-open] [data-phase=active] {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				setActive(null);
 				setFlash(null);
+				setCardFlash(null);
 				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
+				if (cardFlashTimerRef.current !== null) { clearTimeout(cardFlashTimerRef.current); cardFlashTimerRef.current = null }
 				cardRefs.current = [];
 				setFile({ path: entry.path, name: entry.name, reading: true, explaining: true });
 				// 源码与解读完全独立:源码直接读文件、立刻显示;解读异步生成
@@ -562,7 +653,30 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (file && file.functions && file.functions[i]) jumpToLine(file.functions[i].start);
 			};
 
-			// 点击解读中的变量名:定位到该函数内首次出现处并闪烁全部出现位置
+			// 多级回退搜索变量出现行:函数范围内精确匹配 → 函数范围内首标识符 →
+			// 全文件精确匹配 → 全文件首标识符。保证尽量跳转到
+			const findVarLine = (name, start, end, lines) => {
+				const mkRe = (p) => {
+					const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+					try { return new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])') } catch { return null }
+				};
+				const tokenM = /^[A-Za-z_$][\w$]*/.exec(name);
+				const candidates = [name];
+				if (tokenM && tokenM[0] !== name) candidates.push(tokenM[0]);
+				const ranges = [[Math.max(1, start), Math.max(start, end)], [1, lines.length]];
+				for (const range of ranges) {
+					for (const c of candidates) {
+						const re = mkRe(c);
+						if (!re) continue;
+						for (let i = range[0]; i <= Math.min(range[1], lines.length); i++) {
+							if (re.test(lines[i - 1])) return i;
+						}
+					}
+				}
+				return -1;
+			};
+
+			// 点击解读中的变量名:定位到首次出现处并闪烁全部出现位置
 			const onGuideClick = (e) => {
 				const t = e && e.target;
 				if (!t || typeof t.closest !== 'function') return;
@@ -574,14 +688,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				const name = varEl.getAttribute('data-var') || '';
 				if (!name) return;
 				const fn = file.functions[idx];
-				const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-				let re = null;
-				try { re = new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])') } catch { return }
 				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
-				let hitLine = -1;
-				for (let i = fn.start - 1; i < Math.min(fn.end, lines.length); i++) {
-					if (re.test(lines[i])) { hitLine = i + 1; break }
-				}
+				const hitLine = findVarLine(name, fn.start, Math.max(fn.end, fn.start), lines);
 				const seq = Date.now();
 				setActive(idx);
 				setFlash({ name, funcIndex: idx, seq });
@@ -593,10 +701,21 @@ html[data-cg-panel-open] [data-phase=active] {
 				}, 1000);
 			};
 
+			// 看代码 → 点代码行 → 解读卡片闪烁定位(反转原来的"看答案找代码"方向)
 			const onLineClick = (lineNo) => {
 				const i = lineFuncAt(lineNo);
 				setActive(i);
-				if (i !== null) jumpToCard(i);
+				if (i !== null) {
+					const seq = Date.now();
+					setCardFlash({ idx: i, seq });
+					setTab('guide');
+					jumpToCard(i);
+					if (cardFlashTimerRef.current !== null) clearTimeout(cardFlashTimerRef.current);
+					cardFlashTimerRef.current = setTimeout(() => {
+						cardFlashTimerRef.current = null;
+						setCardFlash((f) => (f && f.seq === seq ? null : f));
+					}, 1000);
+				}
 			};
 
 			const onResizeStart = (e) => {
@@ -699,11 +818,11 @@ html[data-cg-panel-open] [data-phase=active] {
 					);
 				}
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef, onClick: onGuideClick },
-					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '点击卡片跳转代码；点击代码行高亮对应解读；点击变量名定位变量'),
+					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '看代码 → 点代码行 → 解读卡片闪烁定位；点卡片/变量名可反向定位'),
 					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
 					fns.map((f, i) => react.createElement('div', {
 						key: i,
-						className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
+						className: 'cg-card' + (active === i ? ' cg-card-on' : '') + (cardFlash && cardFlash.idx === i ? ' cg-card-flash' : ''),
 						'data-idx': i,
 						ref: (el) => { cardRefs.current[i] = el },
 						onClick: (e) => onCardClick(i, e),
@@ -736,10 +855,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!file) return react.createElement('div', { className: 'cg-empty' }, '选择文件后生成调用图');
 				if (file.explaining) return react.createElement('div', { className: 'cg-empty' }, '生成中…');
 				if (!file.callGraph) return react.createElement('div', { className: 'cg-empty' }, '该文件没有生成调用图');
-				return react.createElement('div', null,
-					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 10px 0' } }, '点击图中节点，定位到对应函数'),
-					react.createElement(CallGraphBlock, { code: file.callGraph, onNodeClick: onGraphNodeClick }),
-				);
+				return react.createElement(GraphView, { code: file.callGraph, onNodeClick: onGraphNodeClick });
 			};
 
 			if (!s.open) return null;

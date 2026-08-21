@@ -458,9 +458,10 @@ export function apply(ctx) {
 
   // Line-range correction: the model counts lines loosely, so we re-locate
   // each function by its verbatim signature (first line, whitespace-free
-  // match) near the claimed start, then clamp every end before the next
-  // function's start. Pure display metadata — the code is never modified.
-  const correctRanges = (functions, lines) => {
+  // match) near the claimed start. For Python files the END line is then
+  // derived structurally: a function ends where indentation returns to the
+  // level of its def line (not merely "the line before the next def").
+  const correctRanges = (functions, lines, langHint) => {
     const norm = (s) => String(s).replace(/\s+/g, '')
     for (const f of functions) {
       if (!f.signature) continue
@@ -481,10 +482,33 @@ export function apply(ctx) {
       if (f.end < f.start) f.end = f.start
     }
     functions.sort((a, b) => a.start - b.start || a.end - b.end)
-    for (let i = 1; i < functions.length; i++) {
-      const prev = functions[i - 1]
-      const cur = functions[i]
-      if (prev.end >= cur.start) prev.end = Math.max(cur.start - 1, prev.start)
+    const isPython = langHint === 'py' || langHint === 'pyw'
+      || /^\s*def\s/m.test(lines.slice(0, Math.min(200, lines.length)).join('\n'))
+    if (isPython) {
+      // 缩进规则:函数在缩进回到 def 行层级时结束
+      for (const f of functions) {
+        const defLine = lines[f.start - 1] ?? ''
+        const dm = /^(\s*)/.exec(defLine)
+        const defIndent = dm ? dm[1].length : 0
+        if (!/^\s*def\s/.test(defLine) && !/^\s*@/.test(defLine)) continue
+        let lastContent = f.start
+        for (let ln = f.start + 1; ln <= lines.length; ln++) {
+          const line = lines[ln - 1]
+          if (/^\s*$/.test(line)) continue
+          // 多行签名/长表达式的续行收尾符(只含括号逗号冒号)不算回到基级
+          if (/^\s*[)\]},]+/.test(line)) continue
+          const indent = /^(\s*)/.exec(line)[1].length
+          if (indent <= defIndent) break
+          lastContent = ln
+        }
+        if (lastContent >= f.start) f.end = lastContent
+      }
+    } else {
+      for (let i = 1; i < functions.length; i++) {
+        const prev = functions[i - 1]
+        const cur = functions[i]
+        if (prev.end >= cur.start) prev.end = Math.max(cur.start - 1, prev.start)
+      }
     }
     return functions
   }
@@ -625,7 +649,7 @@ export function apply(ctx) {
           }
         }
         // 用签名反查修正行号(模型数行不准),再夹紧区间
-        result.functions = correctRanges(result.functions, lines)
+        result.functions = correctRanges(result.functions, lines, langHint)
         // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
         const scanned = scanEdges(result.functions, lines)
         for (const key of scanned) result.edgeSet.add(key)
