@@ -20,13 +20,37 @@ export const name = 'code-guide'
 export const inject = ['fs']
 
 const MAX_EXPLAIN_BYTES = 1000000
+// Small/medium scripts take the SIMPLE path: one single model call returns
+// every function (1:1 with the source, nothing extra) in one shot. Only when
+// that fails (e.g. output cap) or the file is large does the chunked
+// two-phase pipeline take over.
+const SINGLE_CALL_MAX_LINES = 500
+const SINGLE_CALL_MAX_TOKENS = 8000
 const OUTLINE_WINDOW = 1200          // lines per outline call (small output each)
+const OUTLINE_CONCURRENCY = 3
 const EXPLAIN_WINDOW_SPAN = 700      // max line span per explanation call
 const EXPLAIN_CONCURRENCY = 3
 const OUTLINE_MAX_TOKENS = 8000
 const EXPLAIN_MAX_TOKENS = 8000
 const MAX_GRAPH_NODES = 120
 const MAX_GRAPH_EDGES = 200
+
+const SINGLE_PROMPT = [
+  '你是一位资深代码讲解老师,面向初学者做逐函数解读。用户会贴出一段完整源代码。',
+  '你只做解读,不运行代码、不修改代码;源码里有几个函数就解读几个,一个不多一个不少。',
+  '请输出严格合法的 JSON(不要输出 JSON 之外的任何内容,不要 Markdown 代码围栏),结构如下:',
+  '{',
+  '  "functions": [',
+  '    {"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号, "summary": "一句话:这个函数做什么", "flow": "执行流程与数据流转(通俗中文,分步骤,解释为什么这样做)", "formula": "关键公式或核心算法说明;没有则为空字符串"}',
+  '  ],',
+  '  "callEdges": [["调用方函数名", "被调用函数名"]]',
+  '}',
+  '要求:',
+  '- start/end 是函数在源码中的真实行号(从 1 开始)',
+  '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复',
+  '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
+  '- callEdges 只列代码里实际出现的调用关系,没有就为空数组',
+].join('\n')
 
 const OUTLINE_PROMPT = [
   '你是一位代码结构分析师。用户会贴出一个大文件的一段(可能很长)。',
@@ -267,6 +291,62 @@ export function apply(ctx) {
     return { functions, edgeSet, warnings, windows: windows.length }
   }
 
+  // Simple path: ONE model call for the whole (small/medium) script.
+  // Output is strictly 1:1 with the source functions, nothing extra.
+  const analyzeSingle = async (lines, baseName, langHint) => {
+    const code = lines.join('\n')
+    const userText = '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
+      + '\n\n```\n' + code + '\n```'
+    const { text, provider, model } = await llmCall(SINGLE_PROMPT, userText, SINGLE_CALL_MAX_TOKENS)
+    const parsed = parseJson(text)
+    const fns = Array.isArray(parsed.functions) ? parsed.functions : []
+    const seen = new Set()
+    const functions = []
+    for (const f of fns) {
+      const name = String((f && f.name) || '').trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      functions.push({
+        name,
+        start: Math.max(1, Number(f && f.start) || 1),
+        end: Math.max(1, Number(f && f.end) || 1),
+        summary: String((f && f.summary) || ''),
+        flow: String((f && f.flow) || ''),
+        formula: String((f && f.formula) || ''),
+      })
+    }
+    functions.sort((a, b) => a.start - b.start || a.end - b.end)
+    const edgeSet = new Set()
+    const edges = Array.isArray(parsed.callEdges) ? parsed.callEdges : []
+    for (const e of edges) {
+      if (Array.isArray(e) && e.length >= 2) {
+        const a = String(e[0]).trim()
+        const b = String(e[1]).trim()
+        if (a && b && a !== b) edgeSet.add(a + '\u0000' + b)
+      }
+    }
+    return {
+      functions,
+      callGraph: buildCallGraph(functions, edgeSet),
+      warnings: [],
+      chunks: 1,
+      route: provider + '/' + model,
+    }
+  }
+
+  // Chunked fallback for large scripts: outline + grouped explanation.
+  const analyzeChunked = async (lines, baseName, langHint) => {
+    const outlineRes = await outline(lines, baseName, langHint)
+    const explainRes = await explain(lines, outlineRes.functions, baseName, langHint)
+    return {
+      functions: explainRes.functions,
+      callGraph: buildCallGraph(explainRes.functions, explainRes.edgeSet),
+      warnings: outlineRes.warnings.concat(explainRes.warnings),
+      chunks: explainRes.windows,
+      route: outlineRes.route,
+    }
+  }
+
   const buildCallGraph = (functions, edgeSet) => {
     if (edgeSet.size === 0) return ''
     const edges = Array.from(edgeSet).slice(0, MAX_GRAPH_EDGES)
@@ -415,16 +495,25 @@ export function apply(ctx) {
         const langHint = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : ''
         const lines = content.replace(/\r\n/g, '\n').split('\n')
 
-        const outlineRes = await outline(lines, baseName, langHint)
-        const explainRes = await explain(lines, outlineRes.functions, baseName, langHint)
-        const callGraph = buildCallGraph(explainRes.functions, explainRes.edgeSet)
+        let result
+        if (lines.length <= SINGLE_CALL_MAX_LINES) {
+          try {
+            result = await analyzeSingle(lines, baseName, langHint)
+          } catch (err) {
+            // 单次调用失败(如输出超限)时自动回退到分段解读
+            result = await analyzeChunked(lines, baseName, langHint)
+            result.warnings.unshift('单次解读失败,已自动回退分段解读: ' + message(err))
+          }
+        } else {
+          result = await analyzeChunked(lines, baseName, langHint)
+        }
         const data = {
           path,
-          functions: explainRes.functions,
-          callGraph,
-          warnings: outlineRes.warnings.concat(explainRes.warnings),
-          chunks: explainRes.windows,
-          model: outlineRes.route,
+          functions: result.functions,
+          callGraph: result.callGraph,
+          warnings: result.warnings,
+          chunks: result.chunks,
+          model: result.route,
         }
         cache.set(path, { mtime, data })
         send(res, 200, data)

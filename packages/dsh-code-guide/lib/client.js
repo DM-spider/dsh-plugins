@@ -540,7 +540,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const renderGuide = () => {
 				if (!file) return react.createElement('div', { className: 'cg-empty' }, '选择文件后，这里逐函数给出通俗解读');
 				if (file.reading) return react.createElement('div', { className: 'cg-empty' }, '源码读取中…');
-				if (file.explaining) return react.createElement('div', { className: 'cg-empty' }, 'AI 解读生成中…（先列函数清单，再分段解读，大文件约需 1–2 分钟）');
+				if (file.explaining) return react.createElement('div', { className: 'cg-empty' }, 'AI 解读生成中…');
 				if (file.explainError) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.explainError + '\n\n可点击右上角「重新解读」重试');
 				if (file.error || file.tooLarge) return null;
 				const fns = file.functions || [];
