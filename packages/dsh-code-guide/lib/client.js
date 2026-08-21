@@ -504,7 +504,7 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const renderCode = () => {
 				if (!file) return react.createElement('div', { className: 'cg-empty' }, '在左侧选择要陪读的代码文件');
-				if (file.loading) return react.createElement('div', { className: 'cg-empty' }, 'AI 解读生成中…（首次约几秒到十几秒）');
+				if (file.loading) return react.createElement('div', { className: 'cg-empty' }, 'AI 解读生成中…（先列函数清单，再分段解读，大文件约需 1–2 分钟）');
 				if (file.error) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.error + '\n\n可点击右上角「重新解读」重试');
 				if (file.tooLarge) return react.createElement('div', { className: 'cg-empty' }, '文件过大（' + (file.size || 0) + ' 字节），暂不支持陪读');
 				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
@@ -533,7 +533,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				const fns = file.functions || [];
 				if (fns.length === 0) return react.createElement('div', { className: 'cg-empty' }, '没有识别到函数（可能是配置/文本类文件）');
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef },
-					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, file.llmTruncated ? '文件很长，AI 解读仅覆盖文件前部分；点击卡片跳转代码' : '点击卡片跳转代码；点击代码行高亮对应解读'),
+					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '点击卡片跳转代码；点击代码行高亮对应解读'),
+					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
 					fns.map((f, i) => react.createElement('div', {
 						key: i,
 						className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
@@ -595,7 +596,7 @@ html[data-cg-panel-open] [data-phase=active] {
 							),
 						),
 						react.createElement('div', { className: 'cg-meta' },
-							file && !file.loading && !file.error ? (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' : '就绪',
+							file && !file.loading && !file.error ? (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : '') : '就绪',
 						),
 					),
 				),
