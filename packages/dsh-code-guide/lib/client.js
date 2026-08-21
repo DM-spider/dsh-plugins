@@ -358,15 +358,25 @@ html[data-cg-panel-open] [data-phase=active] {
 				return () => el.removeEventListener('wheel', onWheel);
 			}, []);
 			const onPointerDown = (e) => {
-				dragRef.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
-				if (vpRef.current) vpRef.current.setPointerCapture(e.pointerId);
+				// 仅 Alt+点击才算拖拽;普通点击不拦截,正常派发给 SVG 节点跳转
+				if (!e.altKey) return;
+				dragRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+				if (vpRef.current && vpRef.current.setPointerCapture) {
+					try { vpRef.current.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+				}
 			};
 			const onPointerMove = (e) => {
 				const d = dragRef.current;
-				if (!d) return;
+				if (!d || e.pointerId !== d.pointerId) return;
 				setView((v) => ({ ...v, tx: d.tx + (e.clientX - d.x), ty: d.ty + (e.clientY - d.y) }));
 			};
-			const onPointerUp = () => { dragRef.current = null };
+			const onPointerUp = (e) => {
+				const d = dragRef.current;
+				dragRef.current = null;
+				if (d && vpRef.current && vpRef.current.hasPointerCapture && vpRef.current.hasPointerCapture(e.pointerId)) {
+					try { vpRef.current.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
+				}
+			};
 			const onCopy = () => {
 				if (navigator.clipboard && navigator.clipboard.writeText) {
 					navigator.clipboard.writeText(String(props.code)).then(() => {
@@ -381,7 +391,7 @@ html[data-cg-panel-open] [data-phase=active] {
 					react.createElement('button', { className: 'cg-gbtn', title: '缩小', onClick: () => zoomBy(-0.2) }, '－'),
 					react.createElement('button', { className: 'cg-gbtn', title: '复位视图', onClick: reset }, '复位'),
 					react.createElement('button', { className: 'cg-gbtn', title: '复制 mermaid 源码', onClick: onCopy }, copied ? '已复制' : '复制 mermaid'),
-					react.createElement('span', { className: 'cg-graph-hint' }, '点击节点定位函数 · 滚轮缩放 · 拖动平移'),
+					react.createElement('span', { className: 'cg-graph-hint' }, '点击节点定位函数 · Alt+拖动平移 · 滚轮缩放'),
 				),
 				react.createElement('div', {
 					className: 'cg-graph-viewport',
