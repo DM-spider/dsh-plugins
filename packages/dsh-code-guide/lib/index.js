@@ -557,6 +557,58 @@ export function apply(ctx) {
     return functions
   }
 
+  // Anchor-based step alignment: the model's per-step line ranges drift, so
+  // we re-derive them deterministically — each step anchors at the FIRST line
+  // in the function where one of its backticked variables appears (steps are
+  // walked in model order with a moving cursor, so anchors stay monotonic).
+  // Step range = [anchor_i, anchor_{i+1} - 1], last step extends to fn end.
+  const anchorFlowSteps = (functions, lines) => {
+    const tokenRe = (tok) => {
+      const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      try { return new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])') } catch { return null }
+    }
+    const tokensOf = (text) => {
+      const out = []
+      const re = /`([^`]+)`/g
+      let m
+      while ((m = re.exec(String(text))) !== null) {
+        const v = m[1].trim()
+        if (!v) continue
+        out.push(v)
+        const first = /^[A-Za-z_$][\w$]*/.exec(v)
+        if (first && first[0] !== v) out.push(first[0])
+      }
+      return out
+    }
+    for (const f of functions) {
+      const steps = f.flowSteps
+      if (!Array.isArray(steps) || steps.length === 0) continue
+      const body = lines.slice(f.start - 1, f.end)
+      let cursor = f.start
+      const out = []
+      for (const st of steps) {
+        const toks = tokensOf(st.text)
+        let anchor = -1
+        for (const tok of toks) {
+          const re = tokenRe(tok)
+          if (!re) continue
+          for (let i = cursor - f.start; i < body.length; i++) {
+            if (re.test(body[i])) { anchor = f.start + i; break }
+          }
+          if (anchor > 0) break
+        }
+        if (anchor === -1) anchor = Math.max(cursor, Math.min(st.start, f.end))
+        out.push({ start: anchor, end: anchor, text: st.text })
+        cursor = Math.max(cursor, anchor + 1)
+      }
+      for (let i = 0; i < out.length; i++) {
+        out[i].end = i + 1 < out.length ? Math.max(out[i + 1].start - 1, out[i].start) : f.end
+      }
+      f.flowSteps = out
+    }
+    return functions
+  }
+
   // path -> { mtime, data } in-memory explanation cache
   const cache = new Map()
 
@@ -695,6 +747,7 @@ export function apply(ctx) {
         // 用签名反查修正行号(模型数行不准),再夹紧区间
         result.functions = correctRanges(result.functions, lines, langHint)
         result.functions = normalizeFlowSteps(result.functions)
+        result.functions = anchorFlowSteps(result.functions, lines)
         // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
         const scanned = scanEdges(result.functions, lines)
         for (const key of scanned) result.edgeSet.add(key)
