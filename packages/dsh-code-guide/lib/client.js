@@ -321,11 +321,19 @@ html[data-cg-panel-open] [data-phase=active] {
 		// 统一解析流程步骤:优先 flowSteps,回退解析 flow 数组(兼容字符串
 		// 条目与 text/step/desc/content 等键名),再回退字符串文本
 		const stepsOf = (f) => {
-			if (Array.isArray(f.flowSteps) && f.flowSteps.length > 0) return f.flowSteps;
+			const clean = (t) => {
+				t = String(t || '').trim();
+				if (t === '[object Object]') return '';
+				return t;
+			};
+			if (Array.isArray(f.flowSteps) && f.flowSteps.length > 0) {
+				const out = f.flowSteps.map((s) => ({ start: Number(s && s.start) || 0, end: Number(s && s.end) || 0, text: clean(s && s.text) })).filter((s) => s.text);
+				if (out.length > 0) return out;
+			}
 			if (Array.isArray(f.flow)) {
 				const out = f.flow.map((s) => {
-					if (typeof s === 'string') return { start: 0, end: 0, text: s };
-					const t = String((s && (s.text || s.step || s.desc || s.description || s.content)) || '').trim();
+					if (typeof s === 'string') return { start: 0, end: 0, text: clean(s) };
+					const t = clean(s && (s.text || s.step || s.desc || s.description || s.content));
 					return {
 						start: Math.round(Number((s && s.start) || 0)) || 0,
 						end: Math.round(Number((s && s.end) || 0)) || 0,
@@ -339,7 +347,10 @@ html[data-cg-panel-open] [data-phase=active] {
 		// Markdown 风格渲染:有序列表(自动编号),延续行并入列表,其余为段落
 		const renderFlowMd = (flow) => {
 			const src = Array.isArray(flow)
-				? flow.map((s) => (typeof s === 'string' ? s : String((s && (s.text || s.step || s.desc || s.description || s.content)) || ''))).filter(Boolean).join('\n')
+				? flow.map((s) => {
+					const t = typeof s === 'string' ? s : String((s && (s.text || s.step || s.desc || s.description || s.content)) || '');
+					return t.trim() === '[object Object]' ? '' : t;
+				}).filter(Boolean).join('\n')
 				: flow;
 			const lines = normalizeFlow(src);
 			if (lines.length === 0) return '';
@@ -903,34 +914,39 @@ html[data-cg-panel-open] [data-phase=active] {
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef, onClick: onGuideClick },
 					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '看代码 → 点代码行 → 对应解读项闪烁；点卡片/变量名反向定位'),
 					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
-					fns.map((f, i) => react.createElement('div', {
-						key: i,
-						className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
-						'data-idx': i,
-						ref: (el) => { cardRefs.current[i] = el },
-						onClick: (e) => onCardClick(i, e),
-					},
-						react.createElement('div', { className: 'cg-card-head' },
-							react.createElement('span', { className: 'cg-card-name' }, f.name),
-							react.createElement('span', { className: 'cg-card-lines' }, f.end > f.start ? 'L' + f.start + ' – L' + f.end : 'L' + f.start),
-						),
-						react.createElement('div', { className: 'cg-card-summary' }, f.summary),
-						stepsOf(f) || f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
-						stepsOf(f)
-							? react.createElement('div', { className: 'cg-card-flow-md' },
-								react.createElement('ol', null,
-									stepsOf(f).map((st, si) => react.createElement('li', {
-										key: si,
-										'data-start': st.start,
-										'data-end': st.end,
-										dangerouslySetInnerHTML: { __html: mdInline(st.text) },
-									})),
-								),
-							)
-							: (f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: renderFlowMd(f.flow) } }) : null),
-						f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
-						f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
-					)),
+					fns.map((f, i) => {
+						const steps = stepsOf(f);
+						const flowBroken = !steps && f.flow && typeof f.flow !== 'string';
+						return react.createElement('div', {
+							key: i,
+							className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
+							'data-idx': i,
+							ref: (el) => { cardRefs.current[i] = el },
+							onClick: (e) => onCardClick(i, e),
+						},
+							react.createElement('div', { className: 'cg-card-head' },
+								react.createElement('span', { className: 'cg-card-name' }, f.name),
+								react.createElement('span', { className: 'cg-card-lines' }, f.end > f.start ? 'L' + f.start + ' – L' + f.end : 'L' + f.start),
+							),
+							react.createElement('div', { className: 'cg-card-summary' }, f.summary),
+							steps || f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
+							steps
+								? react.createElement('div', { className: 'cg-card-flow-md' },
+									react.createElement('ol', null,
+										steps.map((st, si) => react.createElement('li', {
+											key: si,
+											'data-start': st.start,
+											'data-end': st.end,
+											dangerouslySetInnerHTML: { __html: mdInline(st.text) },
+										})),
+									),
+								)
+								: (f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: renderFlowMd(f.flow) } }) : null),
+							flowBroken ? react.createElement('div', { className: 'cg-error', style: { padding: '2px 0 4px', fontSize: '11px' } }, '流程数据格式异常，点右上角「重新解读」更新') : null,
+							f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
+							f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
+						);
+					}),
 				);
 			};
 
