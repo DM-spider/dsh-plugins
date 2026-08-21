@@ -147,6 +147,17 @@ html[data-cg-panel-open] [data-phase=active] {
   color: var(--dsw-alias-brand-primary);
 }
 .cg-card-flow-md strong { font-weight: 700; }
+.cg-var { cursor: pointer; }
+.cg-var:hover { text-decoration: underline; }
+.cg-var-hit {
+  background-color: rgba(59, 130, 246, .18);
+  border-radius: 2px; padding: 0 1px;
+  animation: cg-flash .45s ease-in-out 3;
+}
+@keyframes cg-flash {
+  0% { background-color: rgba(59, 130, 246, .95); color: #fff; }
+  100% { background-color: rgba(59, 130, 246, .18); }
+}
 .cg-card-formula {
   margin: 4px 0 0; padding: 6px 8px;
   background: var(--dsw-alias-bg-layer-2);
@@ -278,7 +289,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		};
 		const mdInline = (s) => {
 			let t = escapeHtml(String(s));
-			t = t.replace(/`([^`\n]+)`/g, (m, c) => '<code>' + c + '</code>');
+			t = t.replace(/`([^`\n]+)`/g, (m, c) => '<code class="cg-var" data-var="' + escapeHtml(c) + '">' + c + '</code>');
 			t = t.replace(/\*\*([^*]+)\*\*/g, (m, c) => '<strong>' + c + '</strong>');
 			t = t.replace(/\*([^*\s][^*]*)\*/g, (m, c) => '<em>' + c + '</em>');
 			return t;
@@ -406,6 +417,9 @@ html[data-cg-panel-open] [data-phase=active] {
 			const [active, setActive] = react.useState(null); // function index
 			const [tab, setTab] = react.useState('guide');
 			const [drag, setDrag] = react.useState(null);
+			// 变量闪烁: { name, funcIndex, seq }
+			const [flash, setFlash] = react.useState(null);
+			const flashTimerRef = react.useRef(null);
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
@@ -443,6 +457,9 @@ html[data-cg-panel-open] [data-phase=active] {
 				const root = document.documentElement;
 				root.style.setProperty('--cg-width', s.width + 'px');
 			}, [s.width]);
+			react.useEffect(() => () => {
+				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
+			}, []);
 
 			const loadChildren = (path) => {
 				api.list(path).then((res) => {
@@ -474,6 +491,8 @@ html[data-cg-panel-open] [data-phase=active] {
 			const openFile = (entry) => {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				setActive(null);
+				setFlash(null);
+				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
 				cardRefs.current = [];
 				setFile({ path: entry.path, name: entry.name, reading: true, explaining: true });
 				// 源码与解读完全独立:源码直接读文件、立刻显示;解读异步生成
@@ -536,9 +555,42 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 			};
 
-			const onCardClick = (i) => {
+			const onCardClick = (i, e) => {
+				// 点击的是变量名时,交给变量定位逻辑,不重复跳转函数
+				if (e && e.target && typeof e.target.closest === 'function' && e.target.closest('.cg-var')) return;
 				setActive(i);
 				if (file && file.functions && file.functions[i]) jumpToLine(file.functions[i].start);
+			};
+
+			// 点击解读中的变量名:定位到该函数内首次出现处并闪烁全部出现位置
+			const onGuideClick = (e) => {
+				const t = e && e.target;
+				if (!t || typeof t.closest !== 'function') return;
+				const varEl = t.closest('.cg-var');
+				if (!varEl) return;
+				const cardEl = t.closest('.cg-card');
+				const idx = cardEl ? Number(cardEl.getAttribute('data-idx')) : NaN;
+				if (!Number.isFinite(idx) || !file || !file.functions || !file.functions[idx]) return;
+				const name = varEl.getAttribute('data-var') || '';
+				if (!name) return;
+				const fn = file.functions[idx];
+				const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+				let re = null;
+				try { re = new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])') } catch { return }
+				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
+				let hitLine = -1;
+				for (let i = fn.start - 1; i < Math.min(fn.end, lines.length); i++) {
+					if (re.test(lines[i])) { hitLine = i + 1; break }
+				}
+				const seq = Date.now();
+				setActive(idx);
+				setFlash({ name, funcIndex: idx, seq });
+				if (hitLine > 0) jumpToLine(hitLine);
+				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
+				flashTimerRef.current = setTimeout(() => {
+					flashTimerRef.current = null;
+					setFlash((f) => (f && f.seq === seq ? null : f));
+				}, 2800);
 			};
 
 			const onLineClick = (lineNo) => {
@@ -592,17 +644,42 @@ html[data-cg-panel-open] [data-phase=active] {
 				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
 				const truncated = lines.length > MAX_LINES;
 				const shown = lines.slice(0, MAX_LINES);
+				const flashFn = flash && file && file.functions ? file.functions[flash.funcIndex] : null;
+				const flashRe = flashFn
+					? (() => {
+						const esc = flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+						try { return new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])', 'g') } catch { return null }
+					})()
+					: null;
 				const els = [];
 				for (let i = 0; i < shown.length; i++) {
 					const lineNo = i + 1;
 					const fi = lineFuncAt(lineNo);
+					const inFlash = flashRe !== null && flashFn !== null && lineNo >= flashFn.start && lineNo <= flashFn.end;
+					let codeEl;
+					if (inFlash) {
+						const parts = [];
+						let last = 0;
+						let m;
+						let k = 0;
+						while ((m = flashRe.exec(shown[i])) !== null) {
+							if (m.index > last) parts.push(shown[i].slice(last, m.index));
+							parts.push(react.createElement('mark', { key: 'm' + k++, className: 'cg-var-hit' }, m[0]));
+							last = m.index + m[0].length;
+							if (m[0].length === 0) flashRe.lastIndex++;
+						}
+						parts.push(shown[i].slice(last));
+						codeEl = react.createElement('span', { className: 'cg-code-text' }, ...parts);
+					} else {
+						codeEl = react.createElement('span', { className: 'cg-code-text' }, shown[i]);
+					}
 					els.push(react.createElement('div', {
 						key: lineNo,
 						className: 'cg-line' + (active !== null && fi === active ? ' cg-line-hi' : ''),
 						onClick: () => onLineClick(lineNo),
 					},
 						react.createElement('span', { className: 'cg-ln' }, lineNo),
-						react.createElement('span', { className: 'cg-code-text' }, shown[i]),
+						codeEl,
 					));
 				}
 				return react.createElement('div', { className: 'cg-code', ref: codePaneRef }, els, truncated ? react.createElement('div', { className: 'cg-empty' }, '文件较长，仅显示前 ' + MAX_LINES + ' 行') : null);
@@ -621,18 +698,19 @@ html[data-cg-panel-open] [data-phase=active] {
 						react.createElement('div', { className: 'cg-empty' }, '没有识别到函数。若这是代码文件，点右上角「重新解读」重试'),
 					);
 				}
-				return react.createElement('div', { className: 'cg-guide', ref: guideRef },
-					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '点击卡片跳转代码；点击代码行高亮对应解读'),
+				return react.createElement('div', { className: 'cg-guide', ref: guideRef, onClick: onGuideClick },
+					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '点击卡片跳转代码；点击代码行高亮对应解读；点击变量名定位变量'),
 					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
 					fns.map((f, i) => react.createElement('div', {
 						key: i,
 						className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
+						'data-idx': i,
 						ref: (el) => { cardRefs.current[i] = el },
-						onClick: () => onCardClick(i),
+						onClick: (e) => onCardClick(i, e),
 					},
 						react.createElement('div', { className: 'cg-card-head' },
 							react.createElement('span', { className: 'cg-card-name' }, f.name),
-							react.createElement('span', { className: 'cg-card-lines' }, 'L' + f.start + ' – L' + f.end),
+							react.createElement('span', { className: 'cg-card-lines' }, f.end > f.start ? 'L' + f.start + ' – L' + f.end : 'L' + f.start),
 						),
 						react.createElement('div', { className: 'cg-card-summary' }, f.summary),
 						f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,

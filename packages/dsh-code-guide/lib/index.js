@@ -383,7 +383,15 @@ export function apply(ctx) {
 
   const buildCallGraph = (functions, edgeSet) => {
     if (edgeSet.size === 0) return ''
-    const edges = Array.from(edgeSet).slice(0, MAX_GRAPH_EDGES)
+    // 只保留两端都是当前脚本函数的调用关系:过滤掉变量、内置函数、外部函数
+    const known = new Set((functions || []).map((f) => f.name))
+    const edges = Array.from(edgeSet)
+      .filter((key) => {
+        const [a, b] = key.split('\u0000')
+        return known.has(a) && known.has(b)
+      })
+      .slice(0, MAX_GRAPH_EDGES)
+    if (edges.length === 0) return ''
     const wanted = new Set()
     for (const key of edges) {
       const [a, b] = key.split('\u0000')
