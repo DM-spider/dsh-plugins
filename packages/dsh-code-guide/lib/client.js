@@ -364,7 +364,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const src = Array.isArray(flow)
 				? flow.map((s) => extractFlowText(s)).filter(Boolean).join('\n')
 				: flow;
-			const lines = normalizeFlow(src);
+			const lines = normalizeFlow(src).filter((x) => !x.includes('[object Object]'));
 			if (lines.length === 0) return '';
 			let out = '';
 			let listOpen = null;
@@ -928,7 +928,8 @@ html[data-cg-panel-open] [data-phase=active] {
 					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
 					fns.map((f, i) => {
 						const steps = stepsOf(f);
-						const flowBroken = !steps && f.flow && typeof f.flow !== 'string';
+						const legacyHtml = !steps && f.flow ? renderFlowMd(f.flow) : '';
+						const flowBroken = !steps && !!f.flow && (!legacyHtml || legacyHtml.includes('[object Object]'));
 						return react.createElement('div', {
 							key: i,
 							className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
@@ -953,7 +954,7 @@ html[data-cg-panel-open] [data-phase=active] {
 										})),
 									),
 								)
-								: (f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: renderFlowMd(f.flow) } }) : null),
+								: (f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: legacyHtml } }) : null),
 							flowBroken ? react.createElement('div', { className: 'cg-error', style: { padding: '2px 0 4px', fontSize: '11px' } }, '流程数据格式异常，点右上角「重新解读」更新') : null,
 							f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
 							f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,

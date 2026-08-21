@@ -289,7 +289,9 @@ export function apply(ctx) {
             if (!name) continue
             explanations.set(name, {
               summary: String((f && f.summary) || ''),
-              flow: String((f && f.flow) || ''),
+              // flow 保持原始值:新格式是数组(步骤+行号),老格式是字符串,
+              // 绝不能 String() 强转,否则数组变 [object Object]
+              flow: (f && f.flow) || '',
               formula: String((f && f.formula) || ''),
             })
           }
@@ -344,7 +346,8 @@ export function apply(ctx) {
         end: Math.max(1, Number(f && f.end) || 1),
         signature: String((f && f.signature) || ''),
         summary: String((f && f.summary) || ''),
-        flow: String((f && f.flow) || ''),
+        // flow 保持原始值(新格式为数组),严禁 String() 强转
+        flow: (f && f.flow) || '',
         formula: String((f && f.formula) || ''),
       })
     }
