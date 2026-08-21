@@ -1,0 +1,12 @@
+# dsh-code-guide bundle patch: mounts the code-guide plugin into the host
+# composition of a dsh profile. The host half registers the
+# /plugins/code-guide/* HTTP routes (list / explain); the web client
+# (dsh.client entry) renders the left-side code reading companion panel in
+# shell.overlay plus a session-header toggle button.
+#
+# Install: `dsh plugin --profile <name> add <this package>` (npm or a local
+# path). The `dsh plugin` command pnpm-installs the package into the profile
+# and reconciles it into the profile's `dsh.profile.bundles` layer list.
+- insert:
+    - id: code-guide
+      name: dsh-code-guide
