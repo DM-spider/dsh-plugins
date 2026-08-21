@@ -25,13 +25,13 @@ const MAX_EXPLAIN_BYTES = 1000000
 // that fails (e.g. output cap) or the file is large does the chunked
 // two-phase pipeline take over.
 const SINGLE_CALL_MAX_LINES = 500
-const SINGLE_CALL_MAX_TOKENS = 8000
+const SINGLE_CALL_MAX_TOKENS = 24000
 const OUTLINE_WINDOW = 1200          // lines per outline call (small output each)
 const OUTLINE_CONCURRENCY = 3
-const EXPLAIN_WINDOW_SPAN = 700      // max line span per explanation call
+const EXPLAIN_WINDOW_SPAN = 400      // max line span per explanation call
 const EXPLAIN_CONCURRENCY = 3
 const OUTLINE_MAX_TOKENS = 8000
-const EXPLAIN_MAX_TOKENS = 8000
+const EXPLAIN_MAX_TOKENS = 24000
 const MAX_GRAPH_NODES = 120
 const MAX_GRAPH_EDGES = 200
 
