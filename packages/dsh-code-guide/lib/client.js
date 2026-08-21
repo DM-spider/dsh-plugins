@@ -318,9 +318,30 @@ html[data-cg-panel-open] [data-phase=active] {
 			t = t.replace(/\*([^*\s][^*]*)\*/g, (m, c) => '<em>' + c + '</em>');
 			return t;
 		};
+		// 统一解析流程步骤:优先 flowSteps,回退解析 flow 数组(兼容字符串
+		// 条目与 text/step/desc/content 等键名),再回退字符串文本
+		const stepsOf = (f) => {
+			if (Array.isArray(f.flowSteps) && f.flowSteps.length > 0) return f.flowSteps;
+			if (Array.isArray(f.flow)) {
+				const out = f.flow.map((s) => {
+					if (typeof s === 'string') return { start: 0, end: 0, text: s };
+					const t = String((s && (s.text || s.step || s.desc || s.description || s.content)) || '').trim();
+					return {
+						start: Math.round(Number((s && s.start) || 0)) || 0,
+						end: Math.round(Number((s && s.end) || 0)) || 0,
+						text: t,
+					};
+				}).filter((s) => s.text);
+				if (out.length > 0) return out;
+			}
+			return null;
+		};
 		// Markdown 风格渲染:有序列表(自动编号),延续行并入列表,其余为段落
 		const renderFlowMd = (flow) => {
-			const lines = normalizeFlow(flow);
+			const src = Array.isArray(flow)
+				? flow.map((s) => (typeof s === 'string' ? s : String((s && (s.text || s.step || s.desc || s.description || s.content)) || ''))).filter(Boolean).join('\n')
+				: flow;
+			const lines = normalizeFlow(src);
 			if (lines.length === 0) return '';
 			let out = '';
 			let listOpen = null;
@@ -718,14 +739,30 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!card) return;
 				const fn = file && file.functions ? file.functions[idx] : null;
 				const lis = card.querySelectorAll('.cg-card-flow-md li');
-				const steps = fn && Array.isArray(fn.flowSteps) && fn.flowSteps.length > 0 ? fn.flowSteps : null;
+				const steps = fn ? stepsOf(fn) : null;
 				let el = null;
 				if (steps) {
+					// 有行号范围的步骤:精确命中;行不在任何步骤内(如 def 行)→ 主介绍
 					for (let j = 0; j < steps.length; j++) {
-						if (lineNo >= steps[j].start && lineNo <= steps[j].end) { el = lis[j] || null; break }
+						if (steps[j].start > 0 && steps[j].end >= steps[j].start && lineNo >= steps[j].start && lineNo <= steps[j].end) { el = lis[j] || null; break }
 					}
-					// 行不在任何步骤范围内(如 def/签名行)→ 闪主介绍
-					if (!el) el = card.querySelector('.cg-card-summary');
+					if (!el) {
+						// 步骤无行号范围:标识符匹配;匹配不到按位置比例选
+						const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
+						const lineText = lines[lineNo - 1] || '';
+						const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
+						if (tokens.length > 0) {
+							for (const li of lis) {
+								const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
+								if (vars.some((v) => tokens.indexOf(v) >= 0)) { el = li; break }
+							}
+						}
+						if (!el && lis.length > 0) {
+							const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
+							el = lis[Math.min(lis.length - 1, Math.floor(ratio * lis.length))];
+						}
+						if (!el) el = card.querySelector('.cg-card-summary');
+					}
 				} else {
 					const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
 					const lineText = lines[lineNo - 1] || '';
@@ -878,11 +915,11 @@ html[data-cg-panel-open] [data-phase=active] {
 							react.createElement('span', { className: 'cg-card-lines' }, f.end > f.start ? 'L' + f.start + ' – L' + f.end : 'L' + f.start),
 						),
 						react.createElement('div', { className: 'cg-card-summary' }, f.summary),
-						(Array.isArray(f.flowSteps) && f.flowSteps.length > 0) || f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
-						Array.isArray(f.flowSteps) && f.flowSteps.length > 0
+						stepsOf(f) || f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
+						stepsOf(f)
 							? react.createElement('div', { className: 'cg-card-flow-md' },
 								react.createElement('ol', null,
-									f.flowSteps.map((st, si) => react.createElement('li', {
+									stepsOf(f).map((st, si) => react.createElement('li', {
 										key: si,
 										'data-start': st.start,
 										'data-end': st.end,

@@ -519,6 +519,11 @@ export function apply(ctx) {
   // ranges into the function range, and force monotonic non-overlap so the
   // client can map a clicked code line to the exact explanation step.
   const normalizeFlowSteps = (functions) => {
+    const stepTextOf = (s) => {
+      if (typeof s === 'string') return s.trim()
+      if (!s || typeof s !== 'object') return ''
+      return String(s.text || s.step || s.desc || s.description || s.content || '').trim()
+    }
     for (const f of functions) {
       const raw = f.flow
       if (!Array.isArray(raw)) { f.flowSteps = null; continue }
@@ -526,7 +531,7 @@ export function apply(ctx) {
         .map((s) => ({
           start: Math.max(1, Math.round(Number((s && s.start) || 0)) || 1),
           end: Math.max(1, Math.round(Number((s && s.end) || 0)) || 1),
-          text: String((s && s.text) || '').trim(),
+          text: stepTextOf(s),
         }))
         .filter((s) => s.text)
         .sort((a, b) => a.start - b.start)
@@ -539,7 +544,8 @@ export function apply(ctx) {
         out.push({ start: st, end: en, text: s.text })
         prevEnd = en
       }
-      f.flowSteps = out.length > 0 ? out : null
+      if (out.length > 0) f.flowSteps = out
+      else { f.flowSteps = null; f.flow = '' }
     }
     return functions
   }
