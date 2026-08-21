@@ -106,34 +106,53 @@ export function apply(ctx) {
     }
   }
 
-  // One-shot model call through the host LLM service. Uses the default
-  // model selection (agentDefaultModel) when available, otherwise the first
-  // registered provider/model. Consumes raw stream chunks by hand so this
-  // bundle needs no runtime imports.
-  const llmCall = async (system, userText, maxTokens, signal) => {
-    const llm = ctx.get('llm')
-    if (llm === undefined) throw new Error('llm 服务不可用')
-    let provider = null
-    let model = null
-    const sel = ctx.get('agentDefaultModel')
-    if (sel !== undefined && typeof sel.currentSelection === 'function') {
+  // Resolve the model route for code explanations (memoized per process):
+  // prefer the fast flash model (deepseek-official / deepseek-v4-flash) when
+  // registered; fall back to the default model selection, then to the first
+  // registered provider/model. Explanations do not need heavy reasoning.
+  let routePromise = null
+  const resolveRoute = async () => {
+    if (routePromise !== null) return routePromise
+    routePromise = (async () => {
+      const llm = ctx.get('llm')
+      if (llm === undefined) throw new Error('llm 服务不可用')
+      const PREFERRED = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
       try {
-        const cur = sel.currentSelection()
-        if (cur && cur.provider && cur.model) { provider = cur.provider; model = cur.model }
-      } catch { /* fall through */ }
-    }
-    if (provider === null) {
+        if (llm.listModels) {
+          const models = await llm.listModels(PREFERRED.provider)
+          const hit = (models || []).find((m) => String(m.model || m.id || m.name) === PREFERRED.model)
+          if (hit) return PREFERRED
+        }
+      } catch { /* provider not registered — fall through */ }
+      const sel = ctx.get('agentDefaultModel')
+      if (sel !== undefined && typeof sel.currentSelection === 'function') {
+        try {
+          const cur = sel.currentSelection()
+          if (cur && cur.provider && cur.model) return { provider: cur.provider, model: cur.model }
+        } catch { /* fall through */ }
+      }
       const providers = llm.listProviders ? llm.listProviders() : []
-      if (!providers || providers.length === 0) throw new Error('没有注册任何模型供应商')
+      if (providers.length === 0) throw new Error('没有注册任何模型供应商')
       const p0 = providers[0]
-      provider = p0.provider || p0.id || p0.name || String(p0)
+      const provider = p0.provider || p0.id || p0.name || String(p0)
       if (llm.listModels) {
         const models = await llm.listModels(provider)
         const m0 = models && models[0]
-        model = m0 ? (m0.model || m0.id || m0.name || String(m0)) : null
+        if (m0) return { provider, model: m0.model || m0.id || m0.name || String(m0) }
       }
-    }
-    if (!provider || !model) throw new Error('无法解析模型路由')
+      throw new Error('无法解析模型路由')
+    })()
+    return routePromise
+  }
+
+  // One-shot model call through the resolved route. Consumes raw stream
+  // chunks by hand so this bundle needs no runtime imports.
+  const llmCall = async (system, userText, maxTokens, signal) => {
+    const llm = ctx.get('llm')
+    if (llm === undefined) throw new Error('llm 服务不可用')
+    const route = await resolveRoute()
+    const provider = route.provider
+    const model = route.model
     let text = ''
     let finish = null
     for await (const chunk of llm.stream({
