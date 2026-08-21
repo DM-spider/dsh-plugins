@@ -318,28 +318,43 @@ html[data-cg-panel-open] [data-phase=active] {
 			t = t.replace(/\*([^*\s][^*]*)\*/g, (m, c) => '<em>' + c + '</em>');
 			return t;
 		};
-		// 统一解析流程步骤:优先 flowSteps,回退解析 flow 数组(兼容字符串
-		// 条目与 text/step/desc/content 等键名),再回退字符串文本
+		// 递归提取流程步骤文本:模型可能返回嵌套结构(数组套对象等),
+		// 一层层剥到字符串为止,任何 [object Object] 脏值一律丢弃
+		const extractFlowText = (v) => {
+			if (typeof v === 'string') {
+				const t = v.trim();
+				return t.includes('[object Object]') ? '' : t;
+			}
+			if (Array.isArray(v)) return v.map((x) => extractFlowText(x)).filter(Boolean).join('；');
+			if (v && typeof v === 'object') {
+				return extractFlowText(v.text || v.step || v.desc || v.description || v.content);
+			}
+			return '';
+		};
+		// 统一解析流程步骤:优先 flowSteps,回退递归解析 flow 数组,再回退字符串
 		const stepsOf = (f) => {
-			const clean = (t) => {
-				t = String(t || '').trim();
-				if (t === '[object Object]') return '';
-				return t;
-			};
 			if (Array.isArray(f.flowSteps) && f.flowSteps.length > 0) {
-				const out = f.flowSteps.map((s) => ({ start: Number(s && s.start) || 0, end: Number(s && s.end) || 0, text: clean(s && s.text) })).filter((s) => s.text);
+				const out = f.flowSteps.map((s) => ({
+					start: Number((s && s.start) || 0) || 0,
+					end: Number((s && s.end) || 0) || 0,
+					text: extractFlowText(s && s.text),
+				})).filter((s) => s.text);
 				if (out.length > 0) return out;
 			}
 			if (Array.isArray(f.flow)) {
 				const out = f.flow.map((s) => {
-					if (typeof s === 'string') return { start: 0, end: 0, text: clean(s) };
-					const t = clean(s && (s.text || s.step || s.desc || s.description || s.content));
-					return {
-						start: Math.round(Number((s && s.start) || 0)) || 0,
-						end: Math.round(Number((s && s.end) || 0)) || 0,
-						text: t,
-					};
-				}).filter((s) => s.text);
+					if (typeof s === 'string') return { start: 0, end: 0, text: extractFlowText(s) };
+					if (s && typeof s === 'object') {
+						const text = extractFlowText(s.text || s.step || s.desc || s.description || s.content);
+						if (!text) return null;
+						return {
+							start: Math.round(Number(s.start) || 0) || 0,
+							end: Math.round(Number(s.end) || 0) || 0,
+							text,
+						};
+					}
+					return null;
+				}).filter(Boolean);
 				if (out.length > 0) return out;
 			}
 			return null;
@@ -347,10 +362,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		// Markdown 风格渲染:有序列表(自动编号),延续行并入列表,其余为段落
 		const renderFlowMd = (flow) => {
 			const src = Array.isArray(flow)
-				? flow.map((s) => {
-					const t = typeof s === 'string' ? s : String((s && (s.text || s.step || s.desc || s.description || s.content)) || '');
-					return t.trim() === '[object Object]' ? '' : t;
-				}).filter(Boolean).join('\n')
+				? flow.map((s) => extractFlowText(s)).filter(Boolean).join('\n')
 				: flow;
 			const lines = normalizeFlow(src);
 			if (lines.length === 0) return '';

@@ -520,9 +520,13 @@ export function apply(ctx) {
   // client can map a clicked code line to the exact explanation step.
   const normalizeFlowSteps = (functions) => {
     const stepTextOf = (s) => {
-      if (typeof s === 'string') return s.trim()
+      if (typeof s === 'string') {
+        const t = s.trim()
+        return t.includes('[object Object]') ? '' : t
+      }
+      if (Array.isArray(s)) return s.map((x) => stepTextOf(x)).filter(Boolean).join('；')
       if (!s || typeof s !== 'object') return ''
-      return String(s.text || s.step || s.desc || s.description || s.content || '').trim()
+      return stepTextOf(s.text || s.step || s.desc || s.description || s.content)
     }
     for (const f of functions) {
       const raw = f.flow
