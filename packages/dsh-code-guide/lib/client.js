@@ -144,6 +144,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-card-flow-md code {
   background: var(--dsw-alias-bg-layer-2); border-radius: 3px; padding: 0 4px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px;
+  color: var(--dsw-alias-brand-primary);
 }
 .cg-card-flow-md strong { font-weight: 700; }
 .cg-card-formula {
