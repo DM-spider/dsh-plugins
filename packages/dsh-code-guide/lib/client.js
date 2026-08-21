@@ -174,6 +174,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		// ---------- fetch api ----------
 		const api = {
 			list: (path) => fetch('/plugins/code-guide/list?path=' + encodeURIComponent(path)).then((r) => r.json()),
+			read: (path) => fetch('/plugins/code-guide/read?path=' + encodeURIComponent(path)).then((r) => r.json()),
 			explain: (path, refresh) => fetch('/plugins/code-guide/explain', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
@@ -403,30 +404,40 @@ html[data-cg-panel-open] [data-phase=active] {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				setActive(null);
 				cardRefs.current = [];
-				setFile({ path: entry.path, name: entry.name, loading: true });
+				setFile({ path: entry.path, name: entry.name, reading: true, explaining: true });
+				// 源码与解读完全独立:源码直接读文件、立刻显示;解读异步生成
+				api.read(entry.path).then((res) => {
+					setFile((f) => {
+						if (!f || f.path !== entry.path) return f;
+						if (res && res.error) return { ...f, reading: false, error: res.error };
+						if (res && res.tooLarge) return { ...f, reading: false, tooLarge: true, size: res.size };
+						return { ...f, reading: false, content: res.content, size: res.size };
+					});
+				}).catch((err) => {
+					setFile((f) => f && f.path === entry.path ? { ...f, reading: false, error: String((err && err.message) || err) } : f);
+				});
 				api.explain(entry.path, false).then((res) => {
 					setFile((f) => {
 						if (!f || f.path !== entry.path) return f;
-					if (res && res.error) return { ...f, loading: false, error: res.error };
-					if (res && res.tooLarge) return { ...f, loading: false, tooLarge: true, size: res.size };
-					return { ...f, loading: false, content: res.content, size: res.size, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', llmTruncated: !!res.llmTruncated };
+						if (res && res.error) return { ...f, explaining: false, explainError: res.error };
+						return { ...f, explaining: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], chunks: res.chunks || 0 };
 					});
 				}).catch((err) => {
-					setFile((f) => f && f.path === entry.path ? { ...f, loading: false, error: String((err && err.message) || err) } : f);
+					setFile((f) => f && f.path === entry.path ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
 				});
 			};
 
 			const reExplain = () => {
-				if (!file || file.loading) return;
-				setFile((f) => ({ ...f, loading: true, error: null }));
+				if (!file || file.explaining) return;
+				setFile((f) => ({ ...f, explaining: true, explainError: null, warnings: [] }));
 				api.explain(file.path, true).then((res) => {
 					setFile((f) => {
 						if (!f || f.path !== file.path) return f;
-					if (res && res.error) return { ...f, loading: false, error: res.error };
-					return { ...f, loading: false, content: res.content, size: res.size, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', llmTruncated: !!res.llmTruncated };
+						if (res && res.error) return { ...f, explaining: false, explainError: res.error };
+						return { ...f, explaining: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], chunks: res.chunks || 0 };
 					});
 				}).catch((err) => {
-					setFile((f) => f && f.path === file.path ? { ...f, loading: false, error: String((err && err.message) || err) } : f);
+					setFile((f) => f && f.path === file.path ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
 				});
 			};
 
@@ -504,8 +515,8 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const renderCode = () => {
 				if (!file) return react.createElement('div', { className: 'cg-empty' }, '在左侧选择要陪读的代码文件');
-				if (file.loading) return react.createElement('div', { className: 'cg-empty' }, 'AI 解读生成中…（先列函数清单，再分段解读，大文件约需 1–2 分钟）');
-				if (file.error) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.error + '\n\n可点击右上角「重新解读」重试');
+				if (file.reading) return react.createElement('div', { className: 'cg-empty' }, '源码读取中…');
+				if (file.error) return react.createElement('div', { className: 'cg-error' }, '源码读取失败：\n' + file.error);
 				if (file.tooLarge) return react.createElement('div', { className: 'cg-empty' }, '文件过大（' + (file.size || 0) + ' 字节），暂不支持陪读');
 				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
 				const truncated = lines.length > MAX_LINES;
@@ -528,7 +539,9 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const renderGuide = () => {
 				if (!file) return react.createElement('div', { className: 'cg-empty' }, '选择文件后，这里逐函数给出通俗解读');
-				if (file.loading) return react.createElement('div', { className: 'cg-empty' }, 'AI 解读生成中…');
+				if (file.reading) return react.createElement('div', { className: 'cg-empty' }, '源码读取中…');
+				if (file.explaining) return react.createElement('div', { className: 'cg-empty' }, 'AI 解读生成中…（先列函数清单，再分段解读，大文件约需 1–2 分钟）');
+				if (file.explainError) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.explainError + '\n\n可点击右上角「重新解读」重试');
 				if (file.error || file.tooLarge) return null;
 				const fns = file.functions || [];
 				if (fns.length === 0) return react.createElement('div', { className: 'cg-empty' }, '没有识别到函数（可能是配置/文本类文件）');
@@ -556,7 +569,7 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const renderCallGraph = () => {
 				if (!file) return react.createElement('div', { className: 'cg-empty' }, '选择文件后生成调用图');
-				if (file.loading) return react.createElement('div', { className: 'cg-empty' }, '生成中…');
+				if (file.explaining) return react.createElement('div', { className: 'cg-empty' }, '生成中…');
 				if (!file.callGraph) return react.createElement('div', { className: 'cg-empty' }, '该文件没有生成调用图');
 				return react.createElement(MermaidBlock, { code: file.callGraph });
 			};
@@ -573,7 +586,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				collapseTab,
 				react.createElement('div', { className: 'cg-header' },
 					react.createElement('span', { className: 'cg-title' }, '代码陪读'),
-					file && !file.loading && !file.error && !file.tooLarge ? react.createElement('button', { className: 'cg-iconbtn', title: '重新解读', onClick: reExplain }, react.createElement(Icon, { name: 'refresh', size: 14 })) : null,
+					file && !file.explaining && !file.error && !file.tooLarge ? react.createElement('button', { className: 'cg-iconbtn', title: '重新解读', onClick: reExplain }, react.createElement(Icon, { name: 'refresh', size: 14 })) : null,
 					react.createElement('button', { className: 'cg-iconbtn', title: '关闭', onClick: () => setOpen(false) }, react.createElement(Icon, { name: 'close', size: 14 })),
 				),
 				react.createElement('div', { className: 'cg-body' },
@@ -596,7 +609,7 @@ html[data-cg-panel-open] [data-phase=active] {
 							),
 						),
 						react.createElement('div', { className: 'cg-meta' },
-							file && !file.loading && !file.error ? (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : '') : '就绪',
+							file && !file.error ? (file.explaining ? '解读生成中…' : (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : '')) : '就绪',
 						),
 					),
 				),

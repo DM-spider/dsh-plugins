@@ -20,7 +20,7 @@ export const name = 'code-guide'
 export const inject = ['fs']
 
 const MAX_EXPLAIN_BYTES = 1000000
-const OUTLINE_WINDOW = 3000          // lines per outline call
+const OUTLINE_WINDOW = 1200          // lines per outline call (small output each)
 const EXPLAIN_WINDOW_SPAN = 700      // max line span per explanation call
 const EXPLAIN_CONCURRENCY = 3
 const OUTLINE_MAX_TOKENS = 8000
@@ -150,33 +150,38 @@ export function apply(ctx) {
     const totalLines = lines.length
     const merged = []
     const seen = new Set()
+    const warnings = []
     let route = ''
     const jobs = []
     for (let start = 0; start < totalLines; start += OUTLINE_WINDOW) {
       jobs.push({ start, end: Math.min(start + OUTLINE_WINDOW, totalLines) })
     }
     for (const job of jobs) {
-      const code = lines.slice(job.start, job.end).join('\n')
-      const userText = '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
-        + '\n本段覆盖完整文件的第 ' + (job.start + 1) + ' 行到第 ' + job.end + ' 行,行号请按完整文件计算。'
-        + '\n\n```\n' + code + '\n```'
-      const { text, provider, model } = await llmCall(OUTLINE_PROMPT, userText, OUTLINE_MAX_TOKENS)
-      route = provider + '/' + model
-      const parsed = parseJson(text)
-      const fns = Array.isArray(parsed.functions) ? parsed.functions : []
-      for (const f of fns) {
-        const name = String((f && f.name) || '').trim()
-        if (!name || seen.has(name)) continue
-        seen.add(name)
-        merged.push({
-          name,
-          start: Math.max(1, Number(f && f.start) || 1),
-          end: Math.max(1, Number(f && f.end) || 1),
-        })
+      try {
+        const code = lines.slice(job.start, job.end).join('\n')
+        const userText = '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
+          + '\n本段覆盖完整文件的第 ' + (job.start + 1) + ' 行到第 ' + job.end + ' 行,行号请按完整文件计算。'
+          + '\n\n```\n' + code + '\n```'
+        const { text, provider, model } = await llmCall(OUTLINE_PROMPT, userText, OUTLINE_MAX_TOKENS)
+        route = provider + '/' + model
+        const parsed = parseJson(text)
+        const fns = Array.isArray(parsed.functions) ? parsed.functions : []
+        for (const f of fns) {
+          const name = String((f && f.name) || '').trim()
+          if (!name || seen.has(name)) continue
+          seen.add(name)
+          merged.push({
+            name,
+            start: Math.max(1, Number(f && f.start) || 1),
+            end: Math.max(1, Number(f && f.end) || 1),
+          })
+        }
+      } catch (err) {
+        warnings.push('第 ' + (job.start + 1) + ' 行起的函数清单失败: ' + message(err))
       }
     }
     merged.sort((a, b) => a.start - b.start || a.end - b.end)
-    return { functions: merged, route }
+    return { functions: merged, route, warnings }
   }
 
   // Phase 2: explain the outlined functions in grouped windows.
@@ -335,6 +340,37 @@ export function apply(ctx) {
       }
     })
 
+    // Plain file read: the source pane loads this directly and instantly —
+    // no LLM involved. The explanation endpoint runs fully in parallel.
+    route('/plugins/code-guide/read', async (req, res) => {
+      const path = param(req, 'path')
+      if (!path) {
+        send(res, 400, { error: 'missing path' })
+        return
+      }
+      try {
+        const target = await fs.resolve(path)
+        const info = await fs.stat(target)
+        if (info === undefined) {
+          send(res, 404, { error: 'not-found' })
+          return
+        }
+        if (info.type !== 'file') {
+          send(res, 400, { error: 'not-a-file' })
+          return
+        }
+        const size = typeof info.size === 'number' ? info.size : 0
+        if (size > MAX_EXPLAIN_BYTES) {
+          send(res, 200, { tooLarge: true, size })
+          return
+        }
+        const content = await fs.readText(target)
+        send(res, 200, { content, size })
+      } catch (err) {
+        send(res, 500, { error: message(err) })
+      }
+    })
+
     route('/plugins/code-guide/explain', async (req, res) => {
       if (req.method !== 'POST') {
         send(res, 405, { error: 'use POST' })
@@ -384,11 +420,9 @@ export function apply(ctx) {
         const callGraph = buildCallGraph(explainRes.functions, explainRes.edgeSet)
         const data = {
           path,
-          content,
-          size,
           functions: explainRes.functions,
           callGraph,
-          warnings: explainRes.warnings,
+          warnings: outlineRes.warnings.concat(explainRes.warnings),
           chunks: explainRes.windows,
           model: outlineRes.route,
         }
