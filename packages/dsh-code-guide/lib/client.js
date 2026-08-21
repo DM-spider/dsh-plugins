@@ -137,18 +137,15 @@ html[data-cg-panel-open] [data-phase=active] {
   border-top: 1px dashed var(--dsw-alias-border-l2);
   letter-spacing: .3px;
 }
-.cg-steps { margin: 4px 0 0; }
-.cg-step { display: flex; gap: 8px; margin: 3px 0; align-items: flex-start; }
-.cg-step-n {
-  flex: none; width: 18px; height: 18px; margin-top: 1px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%;
-  background: var(--dsw-alias-bg-layer-2);
-  border: 1px solid var(--dsw-alias-border-l2);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 10.5px; font-weight: 700; line-height: 1;
+.cg-card-flow-md { margin: 2px 0; color: var(--dsw-alias-label-primary); }
+.cg-card-flow-md ol { margin: 0; padding-left: 20px; }
+.cg-card-flow-md li { margin: 3px 0; line-height: 1.55; }
+.cg-card-flow-md p { margin: 3px 0; }
+.cg-card-flow-md code {
+  background: var(--dsw-alias-bg-layer-2); border-radius: 3px; padding: 0 4px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px;
 }
-.cg-step-text { flex: 1; color: var(--dsw-alias-label-primary); line-height: 1.5; }
+.cg-card-flow-md strong { font-weight: 700; }
 .cg-card-formula {
   margin: 4px 0 0; padding: 6px 8px;
   background: var(--dsw-alias-bg-layer-2);
@@ -262,16 +259,48 @@ html[data-cg-panel-open] [data-phase=active] {
 			}, [props.code]);
 			return react.createElement('div', { className: 'cg-mermaid', ref });
 		};
-		// 把模型的流程描述拆成步骤列表(编号/分号/换行/首先其次…)
-		const splitFlow = (flow) => {
+		// 把模型的流程描述规范成行(编号/分号/换行/首先其次…),供 md 列表渲染
+		const normalizeFlow = (flow) => {
 			let s = String(flow || '').trim();
 			if (!s) return [];
+			s = s.replace(/([;；])/g, '\n');
+			if (!/[\r\n]/.test(s)) {
+				// 单行成段的编号:"1 xxx"、"2. xxx" 拆行并保留编号
+				s = s.replace(/(?:^|\s)(\d{1,2})\s+(?=[^\d\s])/g, '\n$1. ');
+			}
 			s = s
-				.replace(/([;；])/g, '\n')
-				.replace(/(^|\n)\s*(?:步骤\s*)?(?:\d+|[一二三四五六七八九十]+)\s*[\.、:：)）]\s*/g, '\n')
+				.replace(/(^|\n)\s*(?:步骤\s*)?(\d{1,2})\s*[\.、:：)）]\s*/g, '\n$1. ')
+				.replace(/(^|\n)\s*(?:步骤\s*)?[一二三四五六七八九十]{1,3}\s*[\.、:：)）]\s*/g, '\n')
 				.replace(/(^|\n)\s*[①②③④⑤⑥⑦⑧⑨⑩⑪⑫]\s*/g, '\n')
-				.replace(/(^|\n)\s*(?:首先|其次|然后|接着|最后|再|之后|最后一步|第一步|第二步|第三步|第四步|第五步|第六步|第七步|第八步|第九步|第十步)\s*[,，:：]\s*/g, '\n');
-			return s.split('\n').map((x) => x.replace(/^[-*•\s]+/, '').trim()).filter(Boolean);
+				.replace(/(^|\n)\s*(?:首先|其次|然后|接着|最后|再|之后)\s*[,，:：]?\s*/g, '\n');
+			return s.split('\n').map((x) => x.replace(/^[-*•]\s*/, '').trim()).filter(Boolean);
+		};
+		const mdInline = (s) => {
+			let t = escapeHtml(String(s));
+			t = t.replace(/`([^`\n]+)`/g, (m, c) => '<code>' + c + '</code>');
+			t = t.replace(/\*\*([^*]+)\*\*/g, (m, c) => '<strong>' + c + '</strong>');
+			t = t.replace(/\*([^*\s][^*]*)\*/g, (m, c) => '<em>' + c + '</em>');
+			return t;
+		};
+		// Markdown 风格渲染:有序列表(自动编号),延续行并入列表,其余为段落
+		const renderFlowMd = (flow) => {
+			const lines = normalizeFlow(flow);
+			if (lines.length === 0) return '';
+			let out = '';
+			let listOpen = null;
+			for (const line of lines) {
+				const om = /^(\d{1,2})[\.、:：)）]\s+(.*)$/.exec(line);
+				if (om) {
+					if (listOpen !== 'ol') { if (listOpen) out += '</' + listOpen + '>'; out += '<ol>'; listOpen = 'ol' }
+					out += '<li>' + mdInline(om[2]) + '</li>';
+				} else if (listOpen !== null) {
+					out += '<li>' + mdInline(line) + '</li>';
+				} else {
+					out += '<p>' + mdInline(line) + '</p>';
+				}
+			}
+			if (listOpen !== null) out += '</' + listOpen + '>';
+			return out;
 		};
 
 		// ---------- shared store ----------
@@ -606,12 +635,7 @@ html[data-cg-panel-open] [data-phase=active] {
 						),
 						react.createElement('div', { className: 'cg-card-summary' }, f.summary),
 						f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程 / 数据流转') : null,
-						f.flow ? react.createElement('div', { className: 'cg-steps' },
-							splitFlow(f.flow).map((step, si) => react.createElement('div', { key: si, className: 'cg-step' },
-								react.createElement('span', { className: 'cg-step-n' }, si + 1),
-								react.createElement('span', { className: 'cg-step-text' }, step),
-							)),
-						) : null,
+						f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: renderFlowMd(f.flow) } }) : null,
 						f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式 / 算法') : null,
 						f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
 					)),
