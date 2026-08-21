@@ -590,7 +590,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				flashTimerRef.current = setTimeout(() => {
 					flashTimerRef.current = null;
 					setFlash((f) => (f && f.seq === seq ? null : f));
-				}, 2800);
+				}, 1000);
 			};
 
 			const onLineClick = (lineNo) => {

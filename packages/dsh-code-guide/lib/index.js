@@ -394,9 +394,14 @@ export function apply(ctx) {
       const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       try { regexes.set(n, new RegExp('(?<![A-Za-z0-9_$])' + esc + '\\s*\\(', 'm')) } catch { /* skip */ }
     }
-    for (const caller of functions) {
+    // 函数体范围用"本函数起始行 → 下一函数起始行"精确定界(起始行已用
+    // 签名修正),最后一个函数延伸到文件末尾,不依赖模型猜的结束行
+    for (let ci = 0; ci < functions.length; ci++) {
+      const caller = functions[ci]
+      const nextStart = ci + 1 < functions.length ? functions[ci + 1].start : lines.length + 1
       const from = Math.max(1, caller.start)
-      const to = Math.min(lines.length, Math.max(caller.end, caller.start) + 2)
+      const to = Math.min(lines.length, nextStart - 1, caller.start + 2000)
+      if (to < from) continue
       const body = lines.slice(from - 1, to).join('\n')
       for (const callee of names) {
         if (callee === caller.name) continue
@@ -408,38 +413,24 @@ export function apply(ctx) {
   }
 
   const buildCallGraph = (functions, edgeSet) => {
-    if (edgeSet.size === 0) return ''
-    // 只保留两端都是当前脚本函数的调用关系:过滤掉变量、内置函数、外部函数
     const known = new Set((functions || []).map((f) => f.name))
+    // 节点:渲染全部函数(即使没有任何调用边的孤立函数也显示),
+    // 上限 MAX_GRAPH_NODES
+    const nodeNames = (functions || []).map((f) => f.name).slice(0, MAX_GRAPH_NODES)
+    if (nodeNames.length === 0) return ''
+    // 边:只保留两端都是当前脚本函数的调用关系
     const edges = Array.from(edgeSet)
       .filter((key) => {
         const [a, b] = key.split('\u0000')
         return known.has(a) && known.has(b)
       })
       .slice(0, MAX_GRAPH_EDGES)
-    if (edges.length === 0) return ''
-    const wanted = new Set()
-    for (const key of edges) {
-      const [a, b] = key.split('\u0000')
-      wanted.add(a)
-      wanted.add(b)
-    }
     const nodeIds = new Map()
-    let nodeCount = 0
-    const idFor = (name) => {
-      let id = nodeIds.get(name)
-      if (id === undefined) {
-        id = 'n' + (nodeIds.size + 1)
-        nodeIds.set(name, id)
-      }
-      return id
-    }
     const rows = ['flowchart LR']
-    for (const name of wanted) {
-      if (nodeCount >= MAX_GRAPH_NODES) break
-      nodeCount++
-      const label = String(name).replace(/"/g, "'")
-      rows.push('  ' + idFor(name) + '["' + label + '"]')
+    for (const name of nodeNames) {
+      const id = 'n' + (nodeIds.size + 1)
+      nodeIds.set(name, id)
+      rows.push('  ' + id + '["' + String(name).replace(/"/g, "'") + '"]')
     }
     for (const key of edges) {
       const [a, b] = key.split('\u0000')
