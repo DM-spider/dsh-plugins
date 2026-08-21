@@ -12,7 +12,11 @@
 export const name = 'code-guide'
 export const inject = ['fs']
 
-const MAX_EXPLAIN_BYTES = 40000
+const MAX_EXPLAIN_BYTES = 1000000
+// Code passed to the model is capped separately: the panel still shows the
+// whole file (up to 10000 lines client-side), but a very long file is only
+// analyzed up to this many chars to stay inside model context.
+const LLM_CODE_CAP = 400000
 
 const SYSTEM_PROMPT = [
   '你是一位资深代码讲解老师,面向初学者做逐函数解读。用户会贴出一段源代码。',
@@ -196,7 +200,12 @@ export function apply(ctx) {
           return
         }
         const langHint = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : ''
-        const userText = '文件名: ' + path.split(/[\\/]/).pop() + (langHint ? ' (语言/类型: ' + langHint + ')' : '') + '\n\n```\n' + content + '\n```'
+        const baseName = path.split(/[\\/]/).pop()
+        const llmTruncated = content.length > LLM_CODE_CAP
+        const codeForLlm = llmTruncated ? content.slice(0, LLM_CODE_CAP) : content
+        const userText = '文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
+          + (llmTruncated ? ' (文件很长,只发给你前 ' + LLM_CODE_CAP + ' 个字符,解读这部分即可)' : '')
+          + '\n\n```\n' + codeForLlm + '\n```'
         const { text, provider, model } = await llmCall(SYSTEM_PROMPT, userText, 6000)
         const parsed = parseJson(text)
         const rawFunctions = Array.isArray(parsed.functions) ? parsed.functions : []
@@ -209,7 +218,7 @@ export function apply(ctx) {
           formula: String((f && f.formula) || ''),
         })).filter((f) => f.name)
         const callGraph = String(parsed.callGraph || '')
-        const data = { path, content, size, functions, callGraph, model: provider + '/' + model }
+        const data = { path, content, size, functions, callGraph, model: provider + '/' + model, llmTruncated }
         cache.set(path, { mtime, data })
         send(res, 200, data)
       } catch (err) {

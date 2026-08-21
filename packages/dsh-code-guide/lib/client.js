@@ -14,14 +14,14 @@ html {
 }
 html[data-cg-panel-open] [data-phase=active] {
   box-sizing: border-box;
-  padding-left: var(--cg-shift);
+  padding-right: var(--cg-shift);
 }
 .cg-panel {
-  position: fixed; top: 0; left: 0; bottom: 0; z-index: 100;
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 100;
   display: flex; flex-direction: column;
   background: var(--dsw-alias-bg-overlay);
-  border-right: 1px solid var(--dsw-alias-border-l1);
-  box-shadow: 4px 0 16px rgba(0,0,0,.12);
+  border-left: 1px solid var(--dsw-alias-border-l1);
+  box-shadow: -4px 0 16px rgba(0,0,0,.12);
   color: var(--dsw-alias-label-primary);
   font-size: 13px; line-height: 1.45;
   max-width: 78vw; min-width: 420px;
@@ -30,20 +30,20 @@ html[data-cg-panel-open] [data-phase=active] {
 }
 .cg-panel * { box-sizing: border-box; }
 .cg-resize {
-  position: absolute; right: -4px; top: 0; bottom: 0; width: 8px;
+  position: absolute; left: -4px; top: 0; bottom: 0; width: 8px;
   cursor: col-resize; z-index: 5;
 }
 .cg-resize:hover { background: var(--dsw-alias-brand-primary); opacity: .35; }
 .cg-collapse-tab {
-  position: absolute; right: -17px; top: 50%; transform: translateY(-50%);
+  position: absolute; left: -17px; top: 50%; transform: translateY(-50%);
   width: 18px; height: 44px;
   display: flex; align-items: center; justify-content: center;
   padding: 0;
-  border: 1px solid var(--dsw-alias-border-l1); border-left: none;
-  border-radius: 0 7px 7px 0;
+  border: 1px solid var(--dsw-alias-border-l1); border-right: none;
+  border-radius: 7px 0 0 7px;
   background: var(--dsw-alias-bg-overlay);
   color: var(--dsw-alias-label-secondary);
-  box-shadow: 3px 0 8px rgba(0,0,0,.10);
+  box-shadow: -3px 0 8px rgba(0,0,0,.10);
   cursor: pointer; z-index: 6;
 }
 .cg-collapse-tab:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-brand-primary); }
@@ -307,7 +307,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		};
 
 		// ---------- main panel ----------
-		const MAX_LINES = 3000;
+		const MAX_LINES = 10000;
 
 		const GuidePanel = (props) => {
 			const s = useStore();
@@ -407,9 +407,9 @@ html[data-cg-panel-open] [data-phase=active] {
 				api.explain(entry.path, false).then((res) => {
 					setFile((f) => {
 						if (!f || f.path !== entry.path) return f;
-						if (res && res.error) return { ...f, loading: false, error: res.error };
-						if (res && res.tooLarge) return { ...f, loading: false, tooLarge: true, size: res.size };
-						return { ...f, loading: false, content: res.content, size: res.size, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '' };
+					if (res && res.error) return { ...f, loading: false, error: res.error };
+					if (res && res.tooLarge) return { ...f, loading: false, tooLarge: true, size: res.size };
+					return { ...f, loading: false, content: res.content, size: res.size, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', llmTruncated: !!res.llmTruncated };
 					});
 				}).catch((err) => {
 					setFile((f) => f && f.path === entry.path ? { ...f, loading: false, error: String((err && err.message) || err) } : f);
@@ -422,8 +422,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				api.explain(file.path, true).then((res) => {
 					setFile((f) => {
 						if (!f || f.path !== file.path) return f;
-						if (res && res.error) return { ...f, loading: false, error: res.error };
-						return { ...f, loading: false, content: res.content, size: res.size, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '' };
+					if (res && res.error) return { ...f, loading: false, error: res.error };
+					return { ...f, loading: false, content: res.content, size: res.size, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', llmTruncated: !!res.llmTruncated };
 					});
 				}).catch((err) => {
 					setFile((f) => f && f.path === file.path ? { ...f, loading: false, error: String((err && err.message) || err) } : f);
@@ -471,8 +471,8 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 			const onResizeMove = (e) => {
 				if (!drag) return;
-				// drag the RIGHT edge of a LEFT panel: moving right widens it
-				store.width = Math.max(420, Math.min(1400, drag.startWidth + (e.clientX - drag.startX)));
+				// drag the LEFT edge of a RIGHT panel: moving left widens it
+				store.width = Math.max(420, Math.min(1400, drag.startWidth + (drag.startX - e.clientX)));
 				emit();
 			};
 			const endDrag = () => setDrag(null);
@@ -533,7 +533,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const fns = file.functions || [];
 				if (fns.length === 0) return react.createElement('div', { className: 'cg-empty' }, '没有识别到函数（可能是配置/文本类文件）');
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef },
-					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '点击卡片跳转代码；点击代码行高亮对应解读'),
+					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, file.llmTruncated ? '文件很长，AI 解读仅覆盖文件前部分；点击卡片跳转代码' : '点击卡片跳转代码；点击代码行高亮对应解读'),
 					fns.map((f, i) => react.createElement('div', {
 						key: i,
 						className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
@@ -566,7 +566,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				title: '收起代码陪读',
 				'aria-label': '收起代码陪读',
 				onClick: () => setOpen(false),
-			}, react.createElement(Icon, { name: 'chevronLeft', size: 14 }));
+			}, react.createElement(Icon, { name: 'chevronRight', size: 14 }));
 			const panel = react.createElement('div', { className: 'cg-panel', style: { width: s.width + 'px' } },
 				react.createElement('div', { className: 'cg-resize', title: '拖动调整宽度', onPointerDown: onResizeStart }),
 				collapseTab,
