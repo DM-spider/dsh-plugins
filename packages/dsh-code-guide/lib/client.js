@@ -127,7 +127,7 @@ html[data-cg-panel-open] [data-phase=active] {
 }
 .cg-card:hover { border-color: var(--dsw-alias-brand-primary); }
 .cg-card-on { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
-.cg-card-flash { animation: cg-card-flash 1s ease-out 1; }
+.cg-item-flash { animation: cg-card-flash 1s ease-out 1; }
 @keyframes cg-card-flash {
   0% { background: rgba(59, 130, 246, .28); border-color: var(--dsw-alias-brand-primary); }
   100% { background: transparent; }
@@ -515,9 +515,8 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 变量闪烁: { name, funcIndex, seq }
 			const [flash, setFlash] = react.useState(null);
 			const flashTimerRef = react.useRef(null);
-			// 解读卡片闪烁(点击代码行时): { idx, seq }
-			const [cardFlash, setCardFlash] = react.useState(null);
-			const cardFlashTimerRef = react.useRef(null);
+			// 解读项闪烁定时器(点击代码行时)
+			const itemFlashTimerRef = react.useRef(null);
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
@@ -557,7 +556,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			}, [s.width]);
 			react.useEffect(() => () => {
 				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
-				if (cardFlashTimerRef.current !== null) clearTimeout(cardFlashTimerRef.current);
+				if (itemFlashTimerRef.current !== null) clearTimeout(itemFlashTimerRef.current);
 			}, []);
 
 			const loadChildren = (path) => {
@@ -591,9 +590,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				setActive(null);
 				setFlash(null);
-				setCardFlash(null);
 				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
-				if (cardFlashTimerRef.current !== null) { clearTimeout(cardFlashTimerRef.current); cardFlashTimerRef.current = null }
+				if (itemFlashTimerRef.current !== null) { clearTimeout(itemFlashTimerRef.current); itemFlashTimerRef.current = null }
 				cardRefs.current = [];
 				setFile({ path: entry.path, name: entry.name, reading: true, explaining: true });
 				// 源码与解读完全独立:源码直接读文件、立刻显示;解读异步生成
@@ -711,20 +709,60 @@ html[data-cg-panel-open] [data-phase=active] {
 				}, 1000);
 			};
 
-			// 看代码 → 点代码行 → 解读卡片闪烁定位(反转原来的"看答案找代码"方向)
+			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 1 秒)
+			// 匹配规则:优先用该行代码的标识符匹配流程步骤里的变量名;
+			// 匹配不到时按行号在函数内的相对位置比例映射到条目
+			const flashGuideItem = (idx, lineNo) => {
+				const guideEl = guideRef.current;
+				const card = guideEl ? guideEl.querySelector('.cg-card[data-idx="' + idx + '"]') : null;
+				if (!card) return;
+				const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
+				const lineText = lines[lineNo - 1] || '';
+				let el = null;
+				const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
+				if (tokens.length > 0) {
+					const lis = card.querySelectorAll('.cg-card-flow-md li');
+					for (const li of lis) {
+						const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
+						if (vars.some((v) => tokens.indexOf(v) >= 0)) { el = li; break }
+					}
+				}
+				if (!el) {
+					const items = [];
+					const summary = card.querySelector('.cg-card-summary');
+					if (summary) items.push(summary);
+					card.querySelectorAll('.cg-card-flow-md li').forEach((x) => items.push(x));
+					const formula = card.querySelector('.cg-card-formula');
+					if (formula) items.push(formula);
+					if (items.length > 0) {
+						const fn = file && file.functions ? file.functions[idx] : null;
+						if (fn) {
+							const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
+							el = items[Math.min(items.length - 1, Math.floor(ratio * items.length))];
+						} else {
+							el = items[0];
+						}
+					}
+				}
+				if (!el) el = card;
+				el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+				el.classList.remove('cg-item-flash');
+				void el.offsetWidth;
+				el.classList.add('cg-item-flash');
+				if (itemFlashTimerRef.current !== null) clearTimeout(itemFlashTimerRef.current);
+				itemFlashTimerRef.current = setTimeout(() => {
+					itemFlashTimerRef.current = null;
+					el.classList.remove('cg-item-flash');
+				}, 1000);
+			};
+
 			const onLineClick = (lineNo) => {
 				const i = lineFuncAt(lineNo);
 				setActive(i);
 				if (i !== null) {
-					const seq = Date.now();
-					setCardFlash({ idx: i, seq });
 					setTab('guide');
-					jumpToCard(i);
-					if (cardFlashTimerRef.current !== null) clearTimeout(cardFlashTimerRef.current);
-					cardFlashTimerRef.current = setTimeout(() => {
-						cardFlashTimerRef.current = null;
-						setCardFlash((f) => (f && f.seq === seq ? null : f));
-					}, 1000);
+					// 等解读页渲染完成后再定位并闪烁对应解读项
+					setTimeout(() => flashGuideItem(i, lineNo), 80);
 				}
 			};
 
@@ -828,11 +866,11 @@ html[data-cg-panel-open] [data-phase=active] {
 					);
 				}
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef, onClick: onGuideClick },
-					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '看代码 → 点代码行 → 解读卡片闪烁定位；点卡片/变量名可反向定位'),
+					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '看代码 → 点代码行 → 对应解读项闪烁；点卡片/变量名反向定位'),
 					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
 					fns.map((f, i) => react.createElement('div', {
 						key: i,
-						className: 'cg-card' + (active === i ? ' cg-card-on' : '') + (cardFlash && cardFlash.idx === i ? ' cg-card-flash' : ''),
+						className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
 						'data-idx': i,
 						ref: (el) => { cardRefs.current[i] = el },
 						onClick: (e) => onCardClick(i, e),
