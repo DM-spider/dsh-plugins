@@ -41,12 +41,13 @@ const SINGLE_PROMPT = [
   '请输出严格合法的 JSON(不要输出 JSON 之外的任何内容,不要 Markdown 代码围栏),结构如下:',
   '{',
   '  "functions": [',
-  '    {"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号, "summary": "一句话:这个函数做什么", "flow": "执行流程与数据流转,用 Markdown 有序列表,每步单独一行:1. xxx\\n2. xxx,每步一句话,不要混成一段", "formula": "关键公式或核心算法说明;没有则为空字符串"}',
+  '    {"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号, "signature": "函数定义行的原始内容(去掉行首缩进,逐字照抄;装饰器则从第一行装饰器开始)", "summary": "一句话:这个函数做什么", "flow": "执行流程与数据流转,用 Markdown 有序列表,每步单独一行:1. xxx\\n2. xxx,每步一句话,不要混成一段", "formula": "关键公式或核心算法说明;没有则为空字符串"}',
   '  ],',
   '  "callEdges": [["调用方函数名", "被调用函数名"]]',
   '}',
   '要求:',
   '- start/end 是函数在源码中的真实行号(从 1 开始)',
+  '- signature 必须逐字照抄源码,这用于精确定位行号,绝不能改写',
   '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复',
   '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
@@ -58,10 +59,11 @@ const OUTLINE_PROMPT = [
   '任务:列出本段代码中所有函数/方法的定义,不解读、不运行、不修改。',
   '请输出严格合法的 JSON(不要输出 JSON 之外的任何内容,不要 Markdown 代码围栏),结构如下:',
   '{',
-  '  "functions": [{"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号}]',
+  '  "functions": [{"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号, "signature": "函数定义行的原始内容(去掉行首缩进,逐字照抄;装饰器则从第一行装饰器开始)"}]',
   '}',
   '要求:',
   '- start/end 是函数在完整文件中的真实绝对行号(从 1 开始),用户会告诉你本段的起始行号',
+  '- signature 必须逐字照抄源码,这用于精确定位行号,绝不能改写',
   '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来',
   '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
   '- 不要重复,按行号升序排列',
@@ -222,6 +224,7 @@ export function apply(ctx) {
             name,
             start: Math.max(1, Number(f && f.start) || 1),
             end: Math.max(1, Number(f && f.end) || 1),
+            signature: String((f && f.signature) || ''),
           })
         }
       } catch (err) {
@@ -307,6 +310,7 @@ export function apply(ctx) {
         name: f.name,
         start: f.start,
         end: f.end,
+        signature: f.signature || '',
         summary: e ? e.summary : '',
         flow: e ? e.flow : '',
         formula: e ? e.formula : '',
@@ -334,6 +338,7 @@ export function apply(ctx) {
         name,
         start: Math.max(1, Number(f && f.start) || 1),
         end: Math.max(1, Number(f && f.end) || 1),
+        signature: String((f && f.signature) || ''),
         summary: String((f && f.summary) || ''),
         flow: String((f && f.flow) || ''),
         formula: String((f && f.formula) || ''),
@@ -422,6 +427,39 @@ export function apply(ctx) {
       /^\s*(from\s+[\w.]+\s+import|package\s+[\w.]+|#include|using\s+namespace)/m,
     ]
     return markers.some((re) => re.test(head))
+  }
+
+  // Line-range correction: the model counts lines loosely, so we re-locate
+  // each function by its verbatim signature (first line, whitespace-free
+  // match) near the claimed start, then clamp every end before the next
+  // function's start. Pure display metadata — the code is never modified.
+  const correctRanges = (functions, lines) => {
+    const norm = (s) => String(s).replace(/\s+/g, '')
+    for (const f of functions) {
+      if (!f.signature) continue
+      const sig = norm(String(f.signature).split('\n')[0])
+      if (sig.length < 4) continue
+      let found = -1
+      const lo = Math.max(1, f.start - 10)
+      const hi = Math.min(lines.length, f.start + 10)
+      for (let i = lo; i <= hi; i++) {
+        if (norm(lines[i - 1]).startsWith(sig)) { found = i; break }
+      }
+      if (found === -1) {
+        for (let i = 1; i <= lines.length; i++) {
+          if (norm(lines[i - 1]).startsWith(sig)) { found = i; break }
+        }
+      }
+      if (found > 0) f.start = found
+      if (f.end < f.start) f.end = f.start
+    }
+    functions.sort((a, b) => a.start - b.start || a.end - b.end)
+    for (let i = 1; i < functions.length; i++) {
+      const prev = functions[i - 1]
+      const cur = functions[i]
+      if (prev.end >= cur.start) prev.end = Math.max(cur.start - 1, prev.start)
+    }
+    return functions
   }
 
   // path -> { mtime, data } in-memory explanation cache
@@ -559,6 +597,8 @@ export function apply(ctx) {
             result.warnings.push('该文件看起来不是代码(纯文本/配置),没有函数是正常的')
           }
         }
+        // 用签名反查修正行号(模型数行不准),再夹紧区间
+        result.functions = correctRanges(result.functions, lines)
         const data = {
           path,
           functions: result.functions,

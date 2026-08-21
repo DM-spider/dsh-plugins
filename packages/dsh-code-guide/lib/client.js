@@ -634,15 +634,15 @@ html[data-cg-panel-open] [data-phase=active] {
 							react.createElement('span', { className: 'cg-card-lines' }, 'L' + f.start + ' – L' + f.end),
 						),
 						react.createElement('div', { className: 'cg-card-summary' }, f.summary),
-						f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程 / 数据流转') : null,
+						f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
 						f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: renderFlowMd(f.flow) } }) : null,
-						f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式 / 算法') : null,
+						f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
 						f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
 					)),
 				);
 			};
 
-			// 调用图节点点击:定位到对应函数(高亮卡片 + 代码跳转 + 切回解读页)
+			// 调用图节点点击:直接定位到对应代码行并高亮,不切换标签页
 			const onGraphNodeClick = (rawLabel) => {
 				if (!file || !file.functions) return;
 				const compact = (s) => String(s || '').replace(/\s+/g, '');
@@ -650,9 +650,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const i = file.functions.findIndex((f) => compact(f.name) === needle);
 				if (i < 0) return;
 				setActive(i);
-				setTab('guide');
 				jumpToLine(file.functions[i].start);
-				setTimeout(() => jumpToCard(i), 80);
 			};
 
 			const renderCallGraph = () => {
