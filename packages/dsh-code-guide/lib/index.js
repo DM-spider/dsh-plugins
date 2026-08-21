@@ -169,6 +169,9 @@ export function apply(ctx) {
       }],
       maxTokens,
       temperature: 0.2,
+      // 解读只是"把函数用中文讲清楚",不需要推理;关闭思考,否则默认
+      // reasoningEffort=max 的推理 token 会烧光输出预算导致 max-tokens
+      reasoningEffort: 'off',
       signal,
     })) {
       if (chunk.type === 'text-delta') text += chunk.text
