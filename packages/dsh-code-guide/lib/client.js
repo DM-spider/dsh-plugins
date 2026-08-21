@@ -131,8 +131,24 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-card-name { font-weight: 700; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; color: var(--dsw-alias-brand-primary); word-break: break-all; }
 .cg-card-lines { flex: none; color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .cg-card-summary { margin: 2px 0 6px; }
-.cg-card-label { font-size: 11px; font-weight: 700; color: var(--dsw-alias-label-secondary); margin-top: 6px; }
-.cg-card-flow { margin: 2px 0; color: var(--dsw-alias-label-primary); white-space: pre-wrap; }
+.cg-card-label {
+  font-size: 11px; font-weight: 700; color: var(--dsw-alias-label-secondary);
+  margin-top: 8px; padding-top: 6px;
+  border-top: 1px dashed var(--dsw-alias-border-l2);
+  letter-spacing: .3px;
+}
+.cg-steps { margin: 4px 0 0; }
+.cg-step { display: flex; gap: 8px; margin: 3px 0; align-items: flex-start; }
+.cg-step-n {
+  flex: none; width: 18px; height: 18px; margin-top: 1px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10.5px; font-weight: 700; line-height: 1;
+}
+.cg-step-text { flex: 1; color: var(--dsw-alias-label-primary); line-height: 1.5; }
 .cg-card-formula {
   margin: 4px 0 0; padding: 6px 8px;
   background: var(--dsw-alias-bg-layer-2);
@@ -160,6 +176,7 @@ html[data-cg-panel-open] [data-phase=active] {
   overflow: auto;
 }
 .cg-mermaid svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+.cg-mermaid g.node:hover { filter: brightness(1.12); }
 .cg-mermaid-pending { color: var(--dsw-alias-label-secondary); font-size: 12px; padding: 6px 4px; }
 .cg-mermaid-error { color: var(--dsw-alias-state-error-primary); font-size: 12px; margin-bottom: 6px; }
 .cg-mermaid-src {
@@ -211,26 +228,50 @@ html[data-cg-panel-open] [data-phase=active] {
 			});
 			return mermaidAssetPromise;
 		};
-		const renderMermaidInto = (el, code) => {
+		const renderMermaidInto = (el, code, afterRender) => {
 			if (!el) return;
 			loadMermaidAsset().then((engine) => engine.renderMermaid(String(code))).then((svg) => {
 				el.innerHTML = svg;
 				const svgEl = el.querySelector('svg');
 				if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; }
+				if (typeof afterRender === 'function') afterRender(el);
 			}).catch((err) => {
 				el.innerHTML = '<div class="cg-mermaid-error">Mermaid 渲染失败：' + escapeHtml(String((err && err.message) || err)) + '</div>'
 					+ '<pre class="cg-mermaid-src">' + escapeHtml(String(code)) + '</pre>';
 			});
 		};
-		const MermaidBlock = (props) => {
+		// 调用图组件:渲染完成后给每个节点绑定点击,点击定位到对应函数
+		const CallGraphBlock = (props) => {
 			const ref = react.useRef(null);
 			react.useEffect(() => {
 				const el = ref.current;
 				if (!el) return;
 				el.innerHTML = '<div class="cg-mermaid-pending">调用图渲染中…</div>';
-				renderMermaidInto(el, props.code);
+				renderMermaidInto(el, props.code, (container) => {
+					const nodes = container.querySelectorAll('g.node');
+					for (const node of nodes) {
+						const textEl = node.querySelector('text');
+						const raw = textEl ? textEl.textContent : node.textContent;
+						if (!raw) continue;
+						node.style.cursor = 'pointer';
+						node.onclick = () => {
+							if (typeof props.onNodeClick === 'function') props.onNodeClick(raw);
+						};
+					}
+				});
 			}, [props.code]);
 			return react.createElement('div', { className: 'cg-mermaid', ref });
+		};
+		// 把模型的流程描述拆成步骤列表(编号/分号/换行/首先其次…)
+		const splitFlow = (flow) => {
+			let s = String(flow || '').trim();
+			if (!s) return [];
+			s = s
+				.replace(/([;；])/g, '\n')
+				.replace(/(^|\n)\s*(?:步骤\s*)?(?:\d+|[一二三四五六七八九十]+)\s*[\.、:：)）]\s*/g, '\n')
+				.replace(/(^|\n)\s*[①②③④⑤⑥⑦⑧⑨⑩⑪⑫]\s*/g, '\n')
+				.replace(/(^|\n)\s*(?:首先|其次|然后|接着|最后|再|之后|最后一步|第一步|第二步|第三步|第四步|第五步|第六步|第七步|第八步|第九步|第十步)\s*[,，:：]\s*/g, '\n');
+			return s.split('\n').map((x) => x.replace(/^[-*•\s]+/, '').trim()).filter(Boolean);
 		};
 
 		// ---------- shared store ----------
@@ -565,18 +606,39 @@ html[data-cg-panel-open] [data-phase=active] {
 						),
 						react.createElement('div', { className: 'cg-card-summary' }, f.summary),
 						f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程 / 数据流转') : null,
-						f.flow ? react.createElement('div', { className: 'cg-card-flow' }, f.flow) : null,
+						f.flow ? react.createElement('div', { className: 'cg-steps' },
+							splitFlow(f.flow).map((step, si) => react.createElement('div', { key: si, className: 'cg-step' },
+								react.createElement('span', { className: 'cg-step-n' }, si + 1),
+								react.createElement('span', { className: 'cg-step-text' }, step),
+							)),
+						) : null,
 						f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式 / 算法') : null,
 						f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
 					)),
 				);
 			};
 
+			// 调用图节点点击:定位到对应函数(高亮卡片 + 代码跳转 + 切回解读页)
+			const onGraphNodeClick = (rawLabel) => {
+				if (!file || !file.functions) return;
+				const compact = (s) => String(s || '').replace(/\s+/g, '');
+				const needle = compact(rawLabel);
+				const i = file.functions.findIndex((f) => compact(f.name) === needle);
+				if (i < 0) return;
+				setActive(i);
+				setTab('guide');
+				jumpToLine(file.functions[i].start);
+				setTimeout(() => jumpToCard(i), 80);
+			};
+
 			const renderCallGraph = () => {
 				if (!file) return react.createElement('div', { className: 'cg-empty' }, '选择文件后生成调用图');
 				if (file.explaining) return react.createElement('div', { className: 'cg-empty' }, '生成中…');
 				if (!file.callGraph) return react.createElement('div', { className: 'cg-empty' }, '该文件没有生成调用图');
-				return react.createElement(MermaidBlock, { code: file.callGraph });
+				return react.createElement('div', null,
+					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 10px 0' } }, '点击图中节点，定位到对应函数'),
+					react.createElement(CallGraphBlock, { code: file.callGraph, onNodeClick: onGraphNodeClick }),
+				);
 			};
 
 			if (!s.open) return null;
