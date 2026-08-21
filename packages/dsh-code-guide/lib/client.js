@@ -544,7 +544,12 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (file.explainError) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.explainError + '\n\n可点击右上角「重新解读」重试');
 				if (file.error || file.tooLarge) return null;
 				const fns = file.functions || [];
-				if (fns.length === 0) return react.createElement('div', { className: 'cg-empty' }, '没有识别到函数（可能是配置/文本类文件）');
+				if (fns.length === 0) {
+					return react.createElement('div', null,
+						file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '8px 12px' } }, '⚠ ' + file.warnings.join('\n')) : null,
+						react.createElement('div', { className: 'cg-empty' }, '没有识别到函数。若这是代码文件，点右上角「重新解读」重试'),
+					);
+				}
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef },
 					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '点击卡片跳转代码；点击代码行高亮对应解读'),
 					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,

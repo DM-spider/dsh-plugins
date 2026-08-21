@@ -48,6 +48,7 @@ const SINGLE_PROMPT = [
   '要求:',
   '- start/end 是函数在源码中的真实行号(从 1 开始)',
   '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复',
+  '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
   '- callEdges 只列代码里实际出现的调用关系,没有就为空数组',
 ].join('\n')
@@ -62,6 +63,7 @@ const OUTLINE_PROMPT = [
   '要求:',
   '- start/end 是函数在完整文件中的真实绝对行号(从 1 开始),用户会告诉你本段的起始行号',
   '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来',
+  '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
   '- 不要重复,按行号升序排列',
 ].join('\n')
 
@@ -335,6 +337,9 @@ export function apply(ctx) {
       })
     }
     functions.sort((a, b) => a.start - b.start || a.end - b.end)
+    // An empty function list on a code file means the model didn't follow
+    // through — treat it as a failure so the caller falls back / warns.
+    if (functions.length === 0) throw new Error('模型未识别到任何函数')
     const edgeSet = new Set()
     const edges = Array.isArray(parsed.callEdges) ? parsed.callEdges : []
     for (const e of edges) {
@@ -397,6 +402,23 @@ export function apply(ctx) {
       if (nodeIds.has(a) && nodeIds.has(b)) rows.push('  ' + nodeIds.get(a) + ' --> ' + nodeIds.get(b))
     }
     return rows.join('\n')
+  }
+
+  // Cheap heuristic: does the content look like source code at all?
+  const looksLikeCode = (content) => {
+    const head = content.slice(0, 200000)
+    const markers = [
+      /\bdef\s+[A-Za-z_]\w*\s*\(/,                                    // python
+      /\bclass\s+[A-Za-z_]\w*\s*[:({]/,                               // python / js / java ...
+      /\bfunction\s+[A-Za-z_$]\w*\s*\(/,                              // js / php ...
+      /\basync\s+function\b/,
+      /(^|\n)\s*(public|private|protected|static)\s+[A-Za-z_<>\w[\],\s]*\s+[A-Za-z_]\w*\s*\(/, // java / c# / c
+      /=>\s*\{/,
+      /\bconst\s+[A-Za-z_$]\w*\s*=\s*(async\s*)?\(/,                  // js arrow
+      /\bimport\s+(react|numpy|pandas|torch|os|sys|pathlib|\{)/,      // imports
+      /^\s*(from\s+[\w.]+\s+import|package\s+[\w.]+|#include|using\s+namespace)/m,
+    ]
+    return markers.some((re) => re.test(head))
   }
 
   // path -> { mtime, data } in-memory explanation cache
@@ -519,12 +541,20 @@ export function apply(ctx) {
           try {
             result = await analyzeSingle(lines, baseName, langHint)
           } catch (err) {
-            // 单次调用失败(如输出超限)时自动回退到分段解读
+            // 单次调用失败(如输出超限、未识别到函数)时自动回退到分段解读
             result = await analyzeChunked(lines, baseName, langHint)
             result.warnings.unshift('单次解读失败,已自动回退分段解读: ' + message(err))
           }
         } else {
           result = await analyzeChunked(lines, baseName, langHint)
+        }
+        // 仍为空:用正则判断文件到底像不像代码,给出可操作的提示
+        if (result.functions.length === 0) {
+          if (looksLikeCode(content)) {
+            result.warnings.push('该文件疑似代码,但模型未识别到函数;可点「重新解读」重试')
+          } else {
+            result.warnings.push('该文件看起来不是代码(纯文本/配置),没有函数是正常的')
+          }
         }
         const data = {
           path,
