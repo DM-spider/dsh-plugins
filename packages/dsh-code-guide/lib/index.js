@@ -41,7 +41,7 @@ const SINGLE_PROMPT = [
   '请输出严格合法的 JSON(不要输出 JSON 之外的任何内容,不要 Markdown 代码围栏),结构如下:',
   '{',
   '  "functions": [',
-  '    {"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号, "signature": "函数定义行的原始内容(去掉行首缩进,逐字照抄;装饰器则从第一行装饰器开始)", "summary": "一句话:这个函数做什么", "flow": "执行流程与数据流转,用 Markdown 有序列表,每步单独一行:1. xxx\\n2. xxx,每步一句话,不要混成一段;每步必须引用代码里真实出现的变量名/参数名/数据结构名,变量名用反引号包裹(如 `df`、`result`、`seen`、`raw_types`)", "formula": "关键公式或核心算法说明;没有则为空字符串"}',
+  '    {"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号, "signature": "函数定义行的原始内容(去掉行首缩进,逐字照抄;装饰器则从第一行装饰器开始)", "summary": "一句话:这个函数做什么", "flow": [{"start": 本步骤对应的起始行号, "end": 本步骤对应的结束行号, "text": "这一步做什么,必须引用代码里真实出现的变量名/参数名/数据结构名,变量名用反引号包裹(如 `df`、`result`、`seen`、`raw_types`)"}], "formula": "关键公式或核心算法说明;没有则为空字符串"}',
   '  ],',
   '  "callEdges": [["调用方函数名", "被调用函数名"]]',
   '}',
@@ -50,6 +50,7 @@ const SINGLE_PROMPT = [
   '- signature 必须逐字照抄源码,这用于精确定位行号,绝不能改写',
   '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复',
   '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
+  '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 是该步骤对应的代码行范围(函数内、从小到大、不重叠);没有步骤则 flow 为空数组',
   '- flow 每一步都要带上真实变量名并用反引号包裹;严禁泛泛写"遍历列表"而不指明遍历哪个变量',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
   '- callEdges 只列代码里实际出现的调用关系,没有就为空数组',
@@ -77,12 +78,13 @@ const EXPLAIN_PROMPT = [
   '请输出严格合法的 JSON(不要输出 JSON 之外的任何内容,不要 Markdown 代码围栏),结构如下:',
   '{',
   '  "functions": [',
-  '    {"name": "必须与清单完全一致的函数名", "summary": "一句话:这个函数做什么", "flow": "执行流程与数据流转,用 Markdown 有序列表,每步单独一行:1. xxx\\n2. xxx,每步一句话,不要混成一段;每步必须引用代码里真实出现的变量名/参数名/数据结构名,变量名用反引号包裹(如 `df`、`result`、`seen`、`raw_types`)", "formula": "关键公式或核心算法说明;没有则为空字符串"}',
+  '    {"name": "必须与清单完全一致的函数名", "summary": "一句话:这个函数做什么", "flow": [{"start": 本步骤对应的起始行号, "end": 本步骤对应的结束行号, "text": "这一步做什么,必须引用代码里真实出现的变量名/参数名/数据结构名,变量名用反引号包裹(如 `df`、`result`、`seen`、`raw_types`)"}], "formula": "关键公式或核心算法说明;没有则为空字符串"}',
   '  ],',
   '  "callEdges": [["调用方函数名", "被调用函数名"]]',
   '}',
   '要求:',
   '- functions 与给出的清单一一对应:一个不能少、一个不能多,name 严格一致',
+  '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 是该步骤对应的代码行范围(函数内、从小到大、不重叠);没有步骤则 flow 为空数组',
   '- flow 每一步都要带上真实变量名并用反引号包裹;严禁泛泛写"遍历列表"而不指明遍历哪个变量',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
   '- callEdges 只列本段代码里实际出现的调用关系,没有就为空数组',
@@ -513,6 +515,35 @@ export function apply(ctx) {
     return functions
   }
 
+  // Normalize per-step flow arrays: keep only valid steps, clamp their line
+  // ranges into the function range, and force monotonic non-overlap so the
+  // client can map a clicked code line to the exact explanation step.
+  const normalizeFlowSteps = (functions) => {
+    for (const f of functions) {
+      const raw = f.flow
+      if (!Array.isArray(raw)) { f.flowSteps = null; continue }
+      const steps = raw
+        .map((s) => ({
+          start: Math.max(1, Math.round(Number((s && s.start) || 0)) || 1),
+          end: Math.max(1, Math.round(Number((s && s.end) || 0)) || 1),
+          text: String((s && s.text) || '').trim(),
+        }))
+        .filter((s) => s.text)
+        .sort((a, b) => a.start - b.start)
+      const out = []
+      let prevEnd = f.start - 1
+      for (const s of steps) {
+        const st = Math.min(Math.max(s.start, prevEnd + 1), f.end)
+        const en = Math.min(Math.max(s.end, st), f.end)
+        if (st > f.end) break
+        out.push({ start: st, end: en, text: s.text })
+        prevEnd = en
+      }
+      f.flowSteps = out.length > 0 ? out : null
+    }
+    return functions
+  }
+
   // path -> { mtime, data } in-memory explanation cache
   const cache = new Map()
 
@@ -650,6 +681,7 @@ export function apply(ctx) {
         }
         // 用签名反查修正行号(模型数行不准),再夹紧区间
         result.functions = correctRanges(result.functions, lines, langHint)
+        result.functions = normalizeFlowSteps(result.functions)
         // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
         const scanned = scanEdges(result.functions, lines)
         for (const key of scanned) result.edgeSet.add(key)

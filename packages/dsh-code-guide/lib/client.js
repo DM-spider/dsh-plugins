@@ -710,39 +710,37 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 1 秒)
-			// 匹配规则:优先用该行代码的标识符匹配流程步骤里的变量名;
-			// 匹配不到时按行号在函数内的相对位置比例映射到条目
+			// 新数据:按模型给出的步骤行号范围精确命中;旧数据(无步骤行号):
+			// 标识符匹配流程步骤,匹配不到再按位置比例在步骤间选
 			const flashGuideItem = (idx, lineNo) => {
 				const guideEl = guideRef.current;
 				const card = guideEl ? guideEl.querySelector('.cg-card[data-idx="' + idx + '"]') : null;
 				if (!card) return;
-				const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
-				const lineText = lines[lineNo - 1] || '';
+				const fn = file && file.functions ? file.functions[idx] : null;
+				const lis = card.querySelectorAll('.cg-card-flow-md li');
+				const steps = fn && Array.isArray(fn.flowSteps) && fn.flowSteps.length > 0 ? fn.flowSteps : null;
 				let el = null;
-				const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
-				if (tokens.length > 0) {
-					const lis = card.querySelectorAll('.cg-card-flow-md li');
-					for (const li of lis) {
-						const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
-						if (vars.some((v) => tokens.indexOf(v) >= 0)) { el = li; break }
+				if (steps) {
+					for (let j = 0; j < steps.length; j++) {
+						if (lineNo >= steps[j].start && lineNo <= steps[j].end) { el = lis[j] || null; break }
 					}
-				}
-				if (!el) {
-					const items = [];
-					const summary = card.querySelector('.cg-card-summary');
-					if (summary) items.push(summary);
-					card.querySelectorAll('.cg-card-flow-md li').forEach((x) => items.push(x));
-					const formula = card.querySelector('.cg-card-formula');
-					if (formula) items.push(formula);
-					if (items.length > 0) {
-						const fn = file && file.functions ? file.functions[idx] : null;
-						if (fn) {
-							const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
-							el = items[Math.min(items.length - 1, Math.floor(ratio * items.length))];
-						} else {
-							el = items[0];
+					// 行不在任何步骤范围内(如 def/签名行)→ 闪主介绍
+					if (!el) el = card.querySelector('.cg-card-summary');
+				} else {
+					const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
+					const lineText = lines[lineNo - 1] || '';
+					const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
+					if (tokens.length > 0 && lis.length > 0) {
+						for (const li of lis) {
+							const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
+							if (vars.some((v) => tokens.indexOf(v) >= 0)) { el = li; break }
 						}
 					}
+					if (!el && lis.length > 0 && fn) {
+						const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
+						el = lis[Math.min(lis.length - 1, Math.floor(ratio * lis.length))];
+					}
+					if (!el) el = card.querySelector('.cg-card-summary');
 				}
 				if (!el) el = card;
 				el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -880,8 +878,19 @@ html[data-cg-panel-open] [data-phase=active] {
 							react.createElement('span', { className: 'cg-card-lines' }, f.end > f.start ? 'L' + f.start + ' – L' + f.end : 'L' + f.start),
 						),
 						react.createElement('div', { className: 'cg-card-summary' }, f.summary),
-						f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
-						f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: renderFlowMd(f.flow) } }) : null,
+						(Array.isArray(f.flowSteps) && f.flowSteps.length > 0) || f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
+						Array.isArray(f.flowSteps) && f.flowSteps.length > 0
+							? react.createElement('div', { className: 'cg-card-flow-md' },
+								react.createElement('ol', null,
+									f.flowSteps.map((st, si) => react.createElement('li', {
+										key: si,
+										'data-start': st.start,
+										'data-end': st.end,
+										dangerouslySetInnerHTML: { __html: mdInline(st.text) },
+									})),
+								),
+							)
+							: (f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: renderFlowMd(f.flow) } }) : null),
 						f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
 						f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
 					)),
