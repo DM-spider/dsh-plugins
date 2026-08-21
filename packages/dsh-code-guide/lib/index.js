@@ -361,7 +361,7 @@ export function apply(ctx) {
     }
     return {
       functions,
-      callGraph: buildCallGraph(functions, edgeSet),
+      edgeSet,
       warnings: [],
       chunks: 1,
       route: provider + '/' + model,
@@ -374,11 +374,37 @@ export function apply(ctx) {
     const explainRes = await explain(lines, outlineRes.functions, baseName, langHint)
     return {
       functions: explainRes.functions,
-      callGraph: buildCallGraph(explainRes.functions, explainRes.edgeSet),
+      edgeSet: explainRes.edgeSet,
       warnings: outlineRes.warnings.concat(explainRes.warnings),
       chunks: explainRes.windows,
       route: outlineRes.route,
     }
+  }
+
+  // Deterministic call-edge scan: inside each function's line range, every
+  // occurrence of "knownFunctionName(" counts as a call. Complements the
+  // model-reported edges so a missed call (e.g. main -> _load_main_module)
+  // still lands in the graph. Text-only, no extra model calls.
+  const scanEdges = (functions, lines) => {
+    const edges = new Set()
+    const names = (functions || []).map((f) => f.name).filter((n) => n && n.length >= 2)
+    if (names.length < 2) return edges
+    const regexes = new Map()
+    for (const n of names) {
+      const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      try { regexes.set(n, new RegExp('(?<![A-Za-z0-9_$])' + esc + '\\s*\\(', 'm')) } catch { /* skip */ }
+    }
+    for (const caller of functions) {
+      const from = Math.max(1, caller.start)
+      const to = Math.min(lines.length, Math.max(caller.end, caller.start) + 2)
+      const body = lines.slice(from - 1, to).join('\n')
+      for (const callee of names) {
+        if (callee === caller.name) continue
+        const re = regexes.get(callee)
+        if (re && re.test(body)) edges.add(caller.name + '\u0000' + callee)
+      }
+    }
+    return edges
   }
 
   const buildCallGraph = (functions, edgeSet) => {
@@ -609,10 +635,14 @@ export function apply(ctx) {
         }
         // 用签名反查修正行号(模型数行不准),再夹紧区间
         result.functions = correctRanges(result.functions, lines)
+        // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
+        const scanned = scanEdges(result.functions, lines)
+        for (const key of scanned) result.edgeSet.add(key)
+        const callGraph = buildCallGraph(result.functions, result.edgeSet)
         const data = {
           path,
           functions: result.functions,
-          callGraph: result.callGraph,
+          callGraph,
           warnings: result.warnings,
           chunks: result.chunks,
           model: result.route,

@@ -152,7 +152,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-var-hit {
   background-color: rgba(59, 130, 246, .18);
   border-radius: 2px; padding: 0 1px;
-  animation: cg-flash .45s ease-in-out 3;
+  animation: cg-flash .45s ease-in-out 1;
 }
 @keyframes cg-flash {
   0% { background-color: rgba(59, 130, 246, .95); color: #fff; }
