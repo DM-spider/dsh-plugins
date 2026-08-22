@@ -570,6 +570,21 @@ html[data-cg-panel-open] [data-phase=active] {
 			mdMermaidBlocks = [];
 			const lines = String(text).replace(/\r\n/g, '\n').split('\n');
 			const out = [];
+			// GitHub 风格标题锚点:小写 → 去掉 markdown 格式与标点(保留字母/
+			// 数字/中文/空格/连字符/下划线) → 空格转连字符;同名标题加 -1/-2
+			const slugSeen = new Map();
+			const slugOf = (raw) => {
+				let s = String(raw)
+					.replace(/`([^`]*)`/g, '$1')
+					.replace(/\*\*([^*]*)\*\*/g, '$1')
+					.replace(/\*([^*\s][^*]*)\*/g, '$1')
+					.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+				s = s.toLowerCase().trim().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s+/g, '-');
+				if (!s) return '';
+				const n = (slugSeen.get(s) || 0) + 1;
+				slugSeen.set(s, n);
+				return n === 1 ? s : s + '-' + n;
+			};
 			let inCode = false;
 			let codeLines = [];
 			let codeLang = '';
@@ -638,7 +653,11 @@ html[data-cg-panel-open] [data-phase=active] {
 					continue;
 				}
 				const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-				if (heading) { out.push('<h' + heading[1].length + '>' + mdFileInline(heading[2]) + '</h' + heading[1].length + '>'); continue }
+				if (heading) {
+					const id = slugOf(heading[2]);
+					out.push('<h' + heading[1].length + (id ? ' id="' + id + '"' : '') + '>' + mdFileInline(heading[2]) + '</h' + heading[1].length + '>');
+					continue
+				}
 				const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
 				const ordered = /^(\s*)\d+\.\s+(.*)$/.exec(line);
 				const listMatch = bullet || ordered;
@@ -1551,6 +1570,12 @@ html[data-cg-panel-open] [data-phase=active] {
 			const wsItems = props.useWorkspaces((st) => st.items);
 			const recentWorkspaceId = props.useWorkspaces((st) => st.recentWorkspaceId);
 
+			// 预热 mermaid 引擎:面板挂载即开始后台加载,md 预览首次渲染
+			// 不再等待引擎下载
+			react.useEffect(() => {
+				loadMermaidAsset().catch(() => {});
+			}, []);
+
 			let rootPath = null;
 			let rootName = '';
 			if (currentSessionId) {
@@ -1760,12 +1785,14 @@ html[data-cg-panel-open] [data-phase=active] {
 				return () => { disposed = true; pollBusyRef.current = false; if (timer !== null) clearInterval(timer) };
 			}, [s.open, tree && tree.rootPath, autoWatch]);
 
-			// markdown 预览注入后渲染其中的 mermaid 围栏
+			// markdown 预览注入后渲染其中的 mermaid 围栏。
+			// 依赖必须含 reading:读取完成(content 就绪)时 reading 翻转为 false,
+			// path/view 都不变,缺了它占位图永远不会触发渲染
 			react.useEffect(() => {
 				if (file && !file.reading && file.view === 'preview' && isMarkdown(file.name)) {
 					renderMermaidBlocks(mdRef.current);
 				}
-			}, [file && file.path, file && file.view]);
+			}, [file && file.path, file && file.view, file && file.reading]);
 
 			react.useEffect(() => {
 				const root = document.documentElement;
@@ -2457,6 +2484,22 @@ html[data-cg-panel-open] [data-phase=active] {
 				return rows;
 			};
 
+			// md 预览内的锚点链接(#标题):容器内滚动到对应章节,
+			// 阻止浏览器 hash 导航(避免 SPA 把锚点当会话跳转)
+			const onMdPreviewClick = (e) => {
+				const a = e.target.closest('a');
+				if (!a) return;
+				const href = a.getAttribute('href') || '';
+				if (!href.startsWith('#')) return; // 外链(http/https)走默认行为
+				e.preventDefault();
+				const id = href.slice(1);
+				if (!id) return;
+				const container = mdRef.current;
+				if (!container) return;
+				const target = container.querySelector('[id="' + id.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+				if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			};
+
 			const renderCode = () => {
 				if (file.reading) return react.createElement('div', { className: 'cg-empty' }, '文件读取中…');
 				if (file.error) return react.createElement('div', { className: 'cg-error' }, '文件读取失败：\n' + file.error);
@@ -2468,7 +2511,7 @@ html[data-cg-panel-open] [data-phase=active] {
 							react.createElement(MermaidBlock, { key: file.path, code: file.content }));
 					}
 					if (isMarkdown(file.name)) {
-						return react.createElement('div', { className: 'cg-md', ref: mdRef, dangerouslySetInnerHTML: { __html: renderMarkdown(file.content) } });
+						return react.createElement('div', { className: 'cg-md', ref: mdRef, onClick: onMdPreviewClick, dangerouslySetInnerHTML: { __html: renderMarkdown(file.content) } });
 					}
 				}
 				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
