@@ -95,6 +95,39 @@ html[data-cg-panel-open] [data-phase=active] {
 }
 .cg-divider:hover::after, .cg-divider-on::after { background: var(--dsw-alias-brand-primary); }
 .cg-code-pane { flex: none; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.cg-tabsbar {
+  display: flex; align-items: stretch; gap: 2px;
+  padding: 3px 6px 0; flex: none;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+}
+.cg-filetab {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 5px 3px 7px; flex: none; max-width: 170px; min-width: 0;
+  border: 1px solid var(--dsw-alias-border-l1); border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px; cursor: pointer; user-select: none;
+}
+.cg-filetab:hover { color: var(--dsw-alias-label-primary); }
+.cg-filetab-on {
+  background: var(--dsw-alias-bg-overlay);
+  color: var(--dsw-alias-label-primary);
+  border-top: 1px solid var(--dsw-alias-brand-primary);
+}
+.cg-filetab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 预览文件(VSCode 风格):页签栏斜体,双击固定后变正体 */
+.cg-filetab-preview .cg-filetab-name { font-style: italic; }
+.cg-filetab-dot { color: var(--dsw-alias-brand-primary); flex: none; }
+.cg-filetab-x {
+  display: flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin: 0; padding: 0; flex: none;
+  border: none; border-radius: 3px; background: transparent;
+  color: var(--dsw-alias-label-secondary); cursor: pointer;
+}
+.cg-filetab-x:hover { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
 .cg-pane-head {
   display: flex; align-items: center; gap: 6px;
   padding: 4px 8px; flex: none;
@@ -238,6 +271,8 @@ html[data-cg-panel-open] [data-phase=active] {
   user-select: none; touch-action: none; cursor: grab;
 }
 .cg-graph-viewport .cg-mermaid { margin: 8px; }
+/* 缩放由 wrapper 宽度驱动:SVG 始终填满(矢量无损),滚动条随缩放正确变化 */
+.cg-graph-viewport .cg-mermaid svg { width: 100%; }
 .cg-mermaid-pending { color: var(--dsw-alias-label-secondary); font-size: 12px; padding: 6px 4px; }
 .cg-mermaid-error { color: var(--dsw-alias-state-error-primary); font-size: 12px; margin-bottom: 6px; }
 .cg-mermaid-src {
@@ -419,6 +454,30 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!el) return;
 				el.innerHTML = '<div class="cg-mermaid-pending">调用图渲染中…</div>';
 				renderMermaidInto(el, props.code, (container) => {
+					// 回传 SVG 固有尺寸:GraphView 用它驱动 Ctrl+滚轮缩放、滚动范围
+					// 与初始"适应视口"。解析优先级 viewBox(最可靠) → width/height
+					// 属性(纯数字) → style max-width;mermaid v10+ 的 width 是
+					// "100%",不能当像素解析
+					const svgEl = container.querySelector('svg');
+					if (svgEl && typeof props.onSize === 'function') {
+						let w = svgEl.viewBox && svgEl.viewBox.baseVal ? svgEl.viewBox.baseVal.width : 0;
+						let h = svgEl.viewBox && svgEl.viewBox.baseVal ? svgEl.viewBox.baseVal.height : 0;
+						if (!(w > 0)) {
+							const wa = svgEl.getAttribute('width') || '';
+							const num = parseFloat(wa);
+							if (Number.isFinite(num) && num > 0 && wa.indexOf('%') < 0) w = num;
+						}
+						if (!(h > 0)) {
+							const ha = svgEl.getAttribute('height') || '';
+							const num = parseFloat(ha);
+							if (Number.isFinite(num) && num > 0 && ha.indexOf('%') < 0) h = num;
+						}
+						if (!(w > 0)) {
+							const m = /max-width:\s*([\d.]+)px/.exec(svgEl.getAttribute('style') || '');
+							if (m) w = parseFloat(m[1]);
+						}
+						if (w > 0) props.onSize({ w, h: h > 0 ? h : 0 });
+					}
 					const nodes = container.querySelectorAll('g.node');
 					for (const node of nodes) {
 						const textEl = node.querySelector('text');
@@ -436,10 +495,12 @@ html[data-cg-panel-open] [data-phase=active] {
 		// ---------- markdown 预览 ----------
 		const isMarkdown = (name) => /\.(md|markdown|mdown|mkd)$/i.test(name);
 		const isMermaidFile = (name) => /\.(mmd|mermaid)$/i.test(name);
-		// 只有代码类文件才提供 ✨ 函数解读(md/txt/图片等无意义)
+		// 只有"有函数概念"的代码语言才提供函数解读。
+		// 配置/标记语言(json/yaml/toml/ini/css/html)与纯查询语言(sql)不提供
+		const EXPLAINABLE_LANGS = new Set(['js', 'ts', 'python', 'c', 'cpp', 'java', 'go', 'rust', 'shell']);
 		const isExplainable = (name) => {
 			const lang = hlLangFor(name);
-			return !!lang && lang !== 'markdown' && lang !== 'text';
+			return EXPLAINABLE_LANGS.has(lang);
 		};
 		const fmtSize = (n) => {
 			if (n === null || n === undefined) return '';
@@ -762,43 +823,151 @@ html[data-cg-panel-open] [data-phase=active] {
 			return out;
 		};
 
-		// 调用图视图:工具栏(放大/缩小/复位/复制)+ 滚轮缩放 + 拖拽平移
+		// 调用图视图状态缓存:按文件路径记住 缩放/滚动 位置,切页签回来不复位
+		const graphViewCache = new Map(); // filePath -> { scale, fit, scrollLeft, scrollTop, baseW, baseH }
+		// 调用图视图:工具栏(放大/缩小/复位/复制)+ 滚轮滚动窗口 +
+		// Ctrl/⌘+滚轮以鼠标为中心缩放 + 左键按住拖动平移(移动超过 4px 才算,
+		// 否则按点击派发给 SVG 节点跳转)。
+		// 缩放由 wrapper 宽度驱动 SVG 矢量缩放,滚动条始终与内容一致;
+		// 首次打开 fit 看全图,切走/切回保持上次的缩放与滚动位置
 		const GraphView = (props) => {
-			const [view, setView] = react.useState({ scale: 1, tx: 0, ty: 0 });
+			const cachedRef = react.useRef(graphViewCache.get(props.filePath) || null);
+			const c = cachedRef.current;
+			const [scale, setScale] = react.useState(c && c.scale ? c.scale : 1);
+			const scaleRef = react.useRef(c && c.scale ? c.scale : 1);
+			const setScaleBoth = (v) => { scaleRef.current = v; setScale(v) };
+			// 用缓存的图尺寸初始化:挂载时 wrapper 宽立即正确,滚动位置可直接恢复
+			const [base, setBase] = react.useState(c && c.baseW > 0 ? { w: c.baseW, h: c.baseH } : null);
+			const baseRef = react.useRef(c && c.baseW > 0 ? { w: c.baseW, h: c.baseH } : null);
 			const [copied, setCopied] = react.useState(false);
 			const dragRef = react.useRef(null);
+			const suppressClickRef = react.useRef(false);
 			const vpRef = react.useRef(null);
-			const reset = () => setView({ scale: 1, tx: 0, ty: 0 });
-			const zoomBy = (d) => setView((v) => ({ ...v, scale: Math.max(0.4, Math.min(4, +(v.scale + d).toFixed(2))) }));
+			const fitScaleRef = react.useRef(c && c.fit ? c.fit : 1);
+			// 适应视口:图比视口大时缩小到刚好看到全图(留边距),小图保持 100%
+			const fitScale = (size, vp) => {
+				if (!vp || !(size.w > 0) || !(size.h > 0)) return 1;
+				return Math.max(0.4, Math.min(1, (vp.clientWidth - 24) / size.w, (vp.clientHeight - 24) / size.h));
+			};
+			const onSize = (size) => {
+				// 更新图固有尺寸(文件可能变过);切回有缓存时不重新 fit、不动滚动
+				setBase(size);
+				baseRef.current = size;
+				const vp = vpRef.current;
+				if (!vp || !(size.w > 0)) return;
+				const cached = cachedRef.current;
+				if (cached && cached.scale) {
+					// 渲染完成、内容高度就绪:补恢复垂直滚动(水平滚动挂载时已恢复)
+					if (cached.scrollTop) {
+						requestAnimationFrame(() => { vp.scrollTop = cached.scrollTop });
+					}
+				} else {
+					const f = Math.round(fitScale(size, vp) * 100) / 100;
+					fitScaleRef.current = f;
+					setScaleBoth(f);
+				}
+			};
+			// 挂载后立即恢复上次滚动位置:此时 wrapper 宽 = 缓存图宽×缩放;
+			// scrollTop 因 SVG 异步渲染、内容高度尚未就绪可能被浏览器钳回 0,
+			// 渲染完成后在 onSize 里再补一次
+			react.useLayoutEffect(() => {
+				const vp = vpRef.current;
+				if (vp && c && (c.scrollLeft || c.scrollTop)) {
+					vp.scrollLeft = c.scrollLeft || 0;
+					vp.scrollTop = c.scrollTop || 0;
+				}
+			}, []);
+			// 卸载前保存缩放/滚动。必须用 useLayoutEffect 的 cleanup:
+			// 它在 DOM 删除前执行、vpRef 还有效;useEffect 的 cleanup 在 DOM
+			// 删除后执行,ref 已置 null,滚动位置会存成 0
+			react.useLayoutEffect(() => () => {
+				const vp = vpRef.current;
+				graphViewCache.set(props.filePath, {
+					scale: scaleRef.current,
+					fit: fitScaleRef.current,
+					scrollLeft: vp ? vp.scrollLeft : 0,
+					scrollTop: vp ? vp.scrollTop : 0,
+					baseW: baseRef.current ? baseRef.current.w : 0,
+					baseH: baseRef.current ? baseRef.current.h : 0,
+				});
+			}, [props.filePath]);
+			// 以给定视口坐标(mx,my)为中心缩放:该点内容在缩放前后保持在原位
+			const zoomAt = (d, mx, my) => {
+				const vp = vpRef.current;
+				const old = scaleRef.current;
+				const next = Math.max(0.4, Math.min(4, +(old + d).toFixed(2)));
+				if (next === old) return;
+				const ratio = next / old;
+				const cx = vp ? vp.scrollLeft + mx : mx;
+				const cy = vp ? vp.scrollTop + my : my;
+				setScaleBoth(next);
+				if (!vp) return;
+				requestAnimationFrame(() => {
+					vp.scrollLeft = cx * ratio - mx;
+					vp.scrollTop = cy * ratio - my;
+				});
+			};
+			// 工具栏按钮:以视口中心缩放
+			const zoomCenter = (d) => {
+				const vp = vpRef.current;
+				zoomAt(d, vp ? vp.clientWidth / 2 : 0, vp ? vp.clientHeight / 2 : 0);
+			};
+			const reset = () => {
+				setScaleBoth(fitScaleRef.current);
+				const vp = vpRef.current;
+				if (vp) { vp.scrollLeft = 0; vp.scrollTop = 0 }
+			};
 			react.useEffect(() => {
 				const el = vpRef.current;
 				if (!el) return;
 				const onWheel = (e) => {
+					// 普通滚轮 = 窗口滚动(不拦截,浏览器默认);Ctrl/⌘+滚轮 = 缩放
+					if (!e.ctrlKey && !e.metaKey) return;
 					e.preventDefault();
-					zoomBy(e.deltaY < 0 ? 0.15 : -0.15);
+					const rect = el.getBoundingClientRect();
+					zoomAt(e.deltaY < 0 ? 0.15 : -0.15, e.clientX - rect.left, e.clientY - rect.top);
 				};
 				el.addEventListener('wheel', onWheel, { passive: false });
 				return () => el.removeEventListener('wheel', onWheel);
 			}, []);
+			// 左键直接拖动:按下先记录,移动超过 4px 才算平移(否则视为点击,
+			// 正常派发给 SVG 节点跳转);拖动后的 click 在捕获阶段吞掉
+			const DRAG_THRESHOLD = 4;
 			const onPointerDown = (e) => {
-				// 仅 Alt+点击才算拖拽;普通点击不拦截,正常派发给 SVG 节点跳转
-				if (!e.altKey) return;
-				dragRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
-				if (vpRef.current && vpRef.current.setPointerCapture) {
-					try { vpRef.current.setPointerCapture(e.pointerId) } catch { /* ignore */ }
-				}
+				if (e.pointerType === 'mouse' && e.button !== 0) return;
+				const vp = vpRef.current;
+				if (!vp) return;
+				suppressClickRef.current = false;
+				dragRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, sl: vp.scrollLeft, st: vp.scrollTop, moved: false };
 			};
 			const onPointerMove = (e) => {
 				const d = dragRef.current;
-				if (!d || e.pointerId !== d.pointerId) return;
-				setView((v) => ({ ...v, tx: d.tx + (e.clientX - d.x), ty: d.ty + (e.clientY - d.y) }));
+				const vp = vpRef.current;
+				if (!d || !vp || e.pointerId !== d.pointerId) return;
+				if (!d.moved) {
+					if (Math.abs(e.clientX - d.x) < DRAG_THRESHOLD && Math.abs(e.clientY - d.y) < DRAG_THRESHOLD) return;
+					d.moved = true;
+					suppressClickRef.current = true;
+					if (vp.setPointerCapture) {
+						try { vp.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+					}
+				}
+				vp.scrollLeft = d.sl - (e.clientX - d.x);
+				vp.scrollTop = d.st - (e.clientY - d.y);
 			};
 			const onPointerUp = (e) => {
 				const d = dragRef.current;
+				if (!d || e.pointerId !== d.pointerId) return;
 				dragRef.current = null;
-				if (d && vpRef.current && vpRef.current.hasPointerCapture && vpRef.current.hasPointerCapture(e.pointerId)) {
+				if (d.moved && vpRef.current && vpRef.current.hasPointerCapture && vpRef.current.hasPointerCapture(e.pointerId)) {
 					try { vpRef.current.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
 				}
+			};
+			const onClickCapture = (e) => {
+				if (!suppressClickRef.current) return;
+				suppressClickRef.current = false;
+				e.stopPropagation();
+				e.preventDefault();
 			};
 			const onCopy = () => {
 				if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -808,10 +977,11 @@ html[data-cg-panel-open] [data-phase=active] {
 					}).catch(() => {});
 				}
 			};
+			const contentW = base && base.w > 0 ? Math.round(base.w * scale) : 0;
 			return react.createElement('div', { className: 'cg-graph' },
 				react.createElement('div', { className: 'cg-graph-toolbar' },
-					react.createElement('button', { className: 'cg-gbtn', title: '放大', onClick: () => zoomBy(0.2) }, '＋'),
-					react.createElement('button', { className: 'cg-gbtn', title: '缩小', onClick: () => zoomBy(-0.2) }, '－'),
+					react.createElement('button', { className: 'cg-gbtn', title: '放大 (Ctrl+滚轮)', onClick: () => zoomCenter(0.2) }, '＋'),
+					react.createElement('button', { className: 'cg-gbtn', title: '缩小 (Ctrl+滚轮)', onClick: () => zoomCenter(-0.2) }, '－'),
 					react.createElement('button', { className: 'cg-gbtn', title: '复位', onClick: reset }, react.createElement(Icon, { name: 'reset', size: 14 })),
 					react.createElement('button', { className: 'cg-gbtn', title: copied ? '已复制' : '复制 mermaid', onClick: onCopy }, react.createElement(Icon, { name: copied ? 'check' : 'copy', size: 14 })),
 				),
@@ -822,11 +992,10 @@ html[data-cg-panel-open] [data-phase=active] {
 					onPointerMove: onPointerMove,
 					onPointerUp: onPointerUp,
 					onPointerLeave: onPointerUp,
+					onClickCapture: onClickCapture,
 				},
-					react.createElement('div', {
-						style: { transform: 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.scale + ')', transformOrigin: '0 0', display: 'inline-block', minWidth: '100%' },
-					},
-						react.createElement(CallGraphBlock, { code: props.code, onNodeClick: props.onNodeClick }),
+					react.createElement('div', { style: contentW > 0 ? { width: contentW + 'px', margin: '0 auto' } : { width: '100%' } },
+						react.createElement(CallGraphBlock, { code: props.code, onNodeClick: props.onNodeClick, onSize: onSize }),
 					),
 				),
 			);
@@ -903,12 +1072,13 @@ html[data-cg-panel-open] [data-phase=active] {
 		const panelWidthOf = (pane, showCode) => showCode
 			? pane.tree + PANE_DIV_W + pane.code
 			: pane.tree;
-		// 源码区有效宽的下限:打开文件时面板最少占视窗 1/3;
-		// 解读打开时还要留出 解读+分栏线+240
+		// 源码区有效宽的下限:打开文件时面板最少占视窗 1/3;解读打开时还要
+		// 保证两窗各 240(共 485)。注意不能用"当前 guide 宽"动态计算下限——
+		// 否则解读拉大后,最左侧把手会被当前 guide 卡死、无法收缩面板
 		const codeFloorFor = (pane, showGuide) => {
-			const guideMin = showGuide ? pane.guide + PANE_DIV_W + PANE_MIN_PX : PANE_MIN_PX;
+			const min = showGuide ? PANE_MIN_PX * 2 + PANE_DIV_W : PANE_MIN_PX;
 			const thirdMin = Math.max(0, Math.round(window.innerWidth / 3) - pane.tree - PANE_DIV_W);
-			return Math.max(guideMin, thirdMin);
+			return Math.max(min, thirdMin);
 		};
 		// 上限:面板不超出屏幕(留 90px 余量)
 		const codeCeilFor = (pane) => Math.max(0, window.innerWidth - 90 - pane.tree - PANE_DIV_W);
@@ -1336,11 +1506,18 @@ html[data-cg-panel-open] [data-phase=active] {
 			const loading = tree.loading.has(entry.path);
 			const error = tree.errors[entry.path];
 			const children = tree.cache.get(entry.path);
+			// 文件:单击 = 预览(onPreview),双击 = 真正打开(onOpen);
+			// 目录:单击 = 展开/折叠
 			const row = react.createElement('div', {
 				className: 'cg-trow' + (tree.selected === entry.path ? ' cg-trow-sel' : ''),
 				style: { paddingLeft: 4 + props.depth * 12 },
-				onClick: () => isDir ? props.onToggle(entry.path) : props.onOpen(entry),
-				title: entry.path,
+				onClick: (e) => {
+					if (isDir) { props.onToggle(entry.path); return }
+					if (e.detail >= 2) props.onOpen(entry);
+					else if (props.onPreview) props.onPreview(entry);
+					else props.onOpen(entry);
+				},
+				title: entry.path + (isDir ? '' : '\n单击预览 · 双击打开'),
 			},
 				react.createElement('span', { style: { display: 'flex', flex: 'none' } }, isDir
 					? react.createElement(Icon, { name: expanded ? 'chevronDown' : 'chevronRight', size: 12 })
@@ -1356,7 +1533,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			if (isDir && expanded) {
 				if (children) {
 					for (const child of children) {
-						nodes.push(react.createElement(TreeNode, { key: child.path, entry: child, depth: props.depth + 1, tree, onToggle: props.onToggle, onOpen: props.onOpen }));
+						nodes.push(react.createElement(TreeNode, { key: child.path, entry: child, depth: props.depth + 1, tree, onToggle: props.onToggle, onOpen: props.onOpen, onPreview: props.onPreview }));
 					}
 				} else if (!loading && error) {
 					nodes.push(react.createElement('div', { key: '__err', className: 'cg-trow-error', style: { paddingLeft: 4 + (props.depth + 1) * 12 } }, error));
@@ -1389,7 +1566,46 @@ html[data-cg-panel-open] [data-phase=active] {
 			if (!rootPath && wsItems.length > 0) { rootPath = wsItems[0].path; rootName = wsItems[0].title }
 
 			const [tree, setTree] = react.useState(null);
-			const [file, setFile] = react.useState(null); // { path, name, content, size, functions, callGraph, model, loading, error, tooLarge, view }
+			// 多页签:有序数组,每项 = 原 file 对象(内容/视图/滚动位置/解读结果
+			// 全部挂页签上);activePath 指向当前渲染页签。tabsRef 供异步回调读
+			// 最新值(读文件/解读的 .then 里闭包过期)。页签按打开顺序稳定排列,
+			// lastUsed 时间戳决定"满员时淘汰最久未用"
+			const [tabs, setTabs] = react.useState([]);
+			const [activePath, setActivePath] = react.useState(null);
+			const tabsRef = react.useRef([]);
+			const activePathRef = react.useRef(null);
+			const TAB_MAX = 8;
+			const commitTabs = (next) => { tabsRef.current = next; setTabs(next) };
+			// 单击树中文件的临时预览(VSCode 语义):预览 tab 常驻页签栏,
+			// 双击后整个对象转正为页签(解读/视图一并保留)。previewActive 决定
+			// 预览是否"当前显示":切到页签时预览 tab 保留但不激活,再点它即恢复
+			const [previewFile, setPreviewFile] = react.useState(null);
+			const previewRef = react.useRef(null);
+			const [previewActive, setPreviewActive] = react.useState(false);
+			const previewActiveRef = react.useRef(false);
+			const setPreviewActiveBoth = (v) => { previewActiveRef.current = !!v; setPreviewActive(!!v) };
+			const file = (previewFile && previewActive) ? previewFile : tabs.find((t) => t.path === activePath) || null;
+			// 按路径更新指定页签或预览对象(解读结果/读取完成等异步回调带
+			// path 守卫);updater 返回 null/false 表示删除
+			const patchTab = (path, updater) => {
+				const pv = previewRef.current;
+				if (pv && pv.path === path) {
+					const n = typeof updater === 'function' ? updater(pv) : updater;
+					previewRef.current = (n === null || n === false) ? null : n;
+					setPreviewFile(previewRef.current);
+					return;
+				}
+				commitTabs(tabsRef.current.map((t) => {
+					if (t.path !== path) return t;
+					const n = typeof updater === 'function' ? updater(t) : updater;
+					return (n === null || n === false) ? null : n;
+				}).filter(Boolean));
+			};
+			// 更新当前显示对象(视图切换/解读开关等):按显示中的 file 路由
+			const patchActive = (updater) => {
+				const p = file ? file.path : null;
+				if (p) patchTab(p, updater);
+			};
 			const [active, setActive] = react.useState(null); // function index
 			const [tab, setTab] = react.useState('guide');
 			const [drag, setDrag] = react.useState(null);
@@ -1422,6 +1638,60 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
+
+			// 重置"当前页"的行号相关 UI 状态与跳转历史
+			// (切页/关页/打开新文件 = 新的浏览起点)
+			const resetFocusState = () => {
+				setActive(null);
+				setFlash(null);
+				setJumpLine(null);
+				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
+				if (itemFlashTimerRef.current !== null) { clearTimeout(itemFlashTimerRef.current); itemFlashTimerRef.current = null }
+				if (jumpLineTimerRef.current !== null) { clearTimeout(jumpLineTimerRef.current); jumpLineTimerRef.current = null }
+				jumpHistoryRef.current = [];
+				jumpIndexRef.current = -1;
+				lastFocusRef.current = null;
+			};
+			// 切页前保存当前显示文件的滚动位置(源码/预览容器谁挂载存谁)
+			const saveScroll = () => {
+				const p = file ? file.path : null;
+				if (!p) return;
+				const scroller = codePaneRef.current || mdRef.current;
+				if (!scroller) return;
+				const top = scroller.scrollTop;
+				patchTab(p, (t) => t ? { ...t, scrollTop: top } : t);
+			};
+			// 切换到指定页签:滚动位置/解读/视图随页签保留,切回原样恢复。
+			// 预览 tab 常驻页签栏:切到页签只是让预览"未激活",不销毁
+			const switchTo = (path) => {
+				if (!path || (path === activePathRef.current && !(previewRef.current && previewActiveRef.current))) return;
+				saveScroll();
+				resetFocusState();
+				if (previewRef.current) setPreviewActiveBoth(false);
+				commitTabs(tabsRef.current.map((t) => t.path === path ? { ...t, lastUsed: Date.now() } : t));
+				setActivePath(path);
+				activePathRef.current = path;
+			};
+			// 点击预览页签 = 重新激活预览(内容/解读保留,不重读)
+			const switchToPreview = () => {
+				if (!previewRef.current || previewActiveRef.current) return;
+				saveScroll();
+				resetFocusState();
+				setPreviewActiveBoth(true);
+			};
+			// 关闭预览(页签栏 × 或预览态「关闭」):预览 tab 从页签栏移除
+			const closePreview = () => {
+				setPreviewFile(null);
+				previewRef.current = null;
+				setPreviewActiveBoth(false);
+				resetFocusState();
+			};
+			// 切页/切预览后恢复该对象上次滚动位置(首次打开没有 scrollTop,跳过)
+			react.useLayoutEffect(() => {
+				const t = file;
+				const scroller = codePaneRef.current || mdRef.current;
+				if (t && scroller && typeof t.scrollTop === 'number') scroller.scrollTop = t.scrollTop;
+			}, [activePath, previewActive]);
 
 			const without = (set, v) => { const n = new Set(set); n.delete(v); return n };
 			const withVal = (set, v) => { const n = new Set(set); n.add(v); return n };
@@ -1534,10 +1804,11 @@ html[data-cg-panel-open] [data-phase=active] {
 					if (e.key === 'ArrowLeft') idx = Math.max(0, idx - 1);
 					else idx = Math.min(arr.length - 1, idx + 1);
 					if (idx === jumpIndexRef.current) return;
+					const line = arr[idx];
 					jumpIndexRef.current = idx;
-					lastFocusRef.current = arr[idx];
-					jumpToLine(arr[idx]);
-					flashJumpLine(arr[idx]);
+					lastFocusRef.current = line;
+					jumpToLine(line);
+					flashJumpLine(line);
 				};
 				window.addEventListener('keydown', onKey, true);
 				return () => window.removeEventListener('keydown', onKey, true);
@@ -1573,46 +1844,107 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			const applyExplainResult = (path, res) => {
-				setFile((f) => {
-					if (!f || f.path !== path) return f;
+				patchTab(path, (f) => {
+					if (!f) return f;
 					if (res && res.error) return { ...f, explaining: false, explainError: res.error };
 					return { ...f, explaining: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], chunks: res.chunks || 0 };
 				});
 			};
 			const failExplain = (path, err) => {
-				setFile((f) => f && f.path === path ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
+				patchTab(path, (f) => f ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
 			};
 
+			// 页签满员时淘汰最久未用(排除当前活动页),返回裁剪后的数组
+			const pruneTabs = (next) => {
+				if (next.length < TAB_MAX) return next;
+				let victim = null;
+				for (const t of next) {
+					if (t.path === activePathRef.current) continue;
+					if (!victim || (t.lastUsed || 0) < (victim.lastUsed || 0)) victim = t;
+				}
+				if (!victim) return next;
+				showStatus({ ok: false, text: '页签已满，已关闭最久未用的「' + victim.name + '」' });
+				return next.filter((t) => t !== victim);
+			};
+			// 读取完成:填充内容/错误/过大标记(patchTab 按 path 路由到页签或预览)
+			const applyReadResult = (path, res) => {
+				patchTab(path, (f) => {
+					if (!f) return f;
+					if (res && res.error) return { ...f, reading: false, error: res.error };
+					if (res && res.tooLarge) return { ...f, reading: false, tooLarge: true, size: res.size };
+					return { ...f, reading: false, content: res.content, size: res.size };
+				});
+			};
+			// 读取源码(只读、立刻显示;解读由用户点按钮才触发)
+			const readInto = (entry) => {
+				api.read(entry.path)
+					.then((res) => applyReadResult(entry.path, res))
+					.catch((err) => {
+						patchTab(entry.path, (f) => f ? { ...f, reading: false, error: String((err && err.message) || err) } : f);
+					});
+			};
+
+			// 双击文件 = 真正打开:已在页签则切换(解读/滚动原样保留);正在预览
+			// 该文件则预览对象整体转正(解读/视图保留,不重读);否则新建页签。
+			// 打开 = 新的浏览起点(跳转历史随 resetFocusState 清空);
+			// 其他文件的预览 tab 保留在页签栏(未激活)
 			const openFile = (entry) => {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
-				setActive(null);
-				setFlash(null);
-				setJumpLine(null);
-				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
-				if (itemFlashTimerRef.current !== null) { clearTimeout(itemFlashTimerRef.current); itemFlashTimerRef.current = null }
-				if (jumpLineTimerRef.current !== null) { clearTimeout(jumpLineTimerRef.current); jumpLineTimerRef.current = null }
-				// 切换文件后,旧文件的跳转历史不再有意义
-				jumpHistoryRef.current = [];
-				jumpIndexRef.current = -1;
-				lastFocusRef.current = null;
+				const existing = tabsRef.current.find((t) => t.path === entry.path);
+				if (existing) {
+					switchTo(entry.path);
+					return;
+				}
+				const pv = previewRef.current;
+				// 预览转正:对象(含解读结果)整体进页签,原位斜体变正体;
+				// reading 中也可转正(双击树文件时第一次单击刚建预览,双击到达时
+				// 往往还没读完:read.then 会按 path 更新新页签,不重读不闪烁)
+				const promoted = !!(pv && pv.path === entry.path && !pv.error && !pv.tooLarge);
 				// md/.mmd 默认进预览视图,其余进源码视图
-				setFile({ path: entry.path, name: entry.name, reading: true, explaining: false, view: (isMarkdown(entry.name) || isMermaidFile(entry.name)) ? 'preview' : 'code' });
-				// 点击文件只读源码、立刻显示;解读由用户点 ✨ 图标才触发
-				api.read(entry.path).then((res) => {
-					setFile((f) => {
-						if (!f || f.path !== entry.path) return f;
-						if (res && res.error) return { ...f, reading: false, error: res.error };
-						if (res && res.tooLarge) return { ...f, reading: false, tooLarge: true, size: res.size };
-						return { ...f, reading: false, content: res.content, size: res.size };
-					});
-				}).catch((err) => {
-					setFile((f) => f && f.path === entry.path ? { ...f, reading: false, error: String((err && err.message) || err) } : f);
-				});
+				const tab = promoted
+					? { ...pv, lastUsed: Date.now() }
+					: { path: entry.path, name: entry.name, reading: true, explaining: false, view: (isMarkdown(entry.name) || isMermaidFile(entry.name)) ? 'preview' : 'code', lastUsed: Date.now() };
+				if (promoted) {
+					setPreviewFile(null);
+					previewRef.current = null;
+					setPreviewActiveBoth(false);
+				} else if (previewRef.current) {
+					// 双击另一个文件:旧预览 tab 保留但不激活
+					setPreviewActiveBoth(false);
+				}
+				resetFocusState();
+				commitTabs(pruneTabs(tabsRef.current).concat([tab]));
+				setActivePath(entry.path);
+				activePathRef.current = entry.path;
+				if (!promoted) readInto(entry);
+			};
+
+			// 单击树中文件 = 临时预览:已打开的切页签;该文件已在预览槽则直接
+			// 重新激活(不重读);否则替换预览槽并读取。双击(树文件名或预览页签)
+			// 原地转正为页签
+			const previewEntry = (entry) => {
+				setTree((t) => t ? { ...t, selected: entry.path } : t);
+				const existing = tabsRef.current.find((t) => t.path === entry.path);
+				if (existing) {
+					switchTo(entry.path);
+					return;
+				}
+				const pv = previewRef.current;
+				if (pv && pv.path === entry.path && !pv.error && !pv.tooLarge) {
+					switchToPreview();
+					return;
+				}
+				resetFocusState();
+				const next = { path: entry.path, name: entry.name, reading: true, explaining: false, view: (isMarkdown(entry.name) || isMermaidFile(entry.name)) ? 'preview' : 'code' };
+				previewRef.current = next;
+				setPreviewFile(next);
+				setPreviewActiveBoth(true);
+				readInto(entry);
 			};
 
 			// 预览/源码视图切换(仅 md/.mmd 有意义)
 			const toggleView = () => {
-				setFile((f) => f ? { ...f, view: f.view === 'preview' ? 'code' : 'preview' } : f);
+				patchActive((f) => f ? { ...f, view: f.view === 'preview' ? 'code' : 'preview' } : f);
 			};
 			// 手动刷新:重置整个树并重新拉取根目录
 			const refresh = () => {
@@ -1704,49 +2036,60 @@ html[data-cg-panel-open] [data-phase=active] {
 			//  - 解读框已打开:再次点击 = 重新解读,强制走 LLM 重新生成
 			// 每次点击前都先重新读一遍源码,保证源码显示与解读结果的行号一致
 			// (文件可能已在外部编辑器里改过)。仅代码类文件提供该按钮
-			const runExplain = () => {
-				if (!file || file.reading || file.error || file.tooLarge || !isExplainable(file.name)) return;
-				if (file.explaining) {
+			const startExplain = (f) => {
+				if (!f || f.reading || f.error || f.tooLarge || !isExplainable(f.name)) return;
+				if (f.explaining) {
 					// 生成仍在进行:只重新展开板块等结果,不重复请求
-					setFile((f) => ({ ...f, guideOn: true }));
+					patchTab(f.path, (t) => t ? { ...t, guideOn: true } : t);
 					return;
 				}
-				const path = file.path;
-				const force = !!file.guideOn; // 已打开再点 = 重新解读
-				setFile((f) => ({ ...f, guideOn: true, explaining: true, explainError: null, warnings: [] }));
+				const path = f.path;
+				const force = !!f.guideOn; // 已打开再点 = 重新解读
+				patchTab(path, (t) => t ? { ...t, guideOn: true, explaining: true, explainError: null, warnings: [] } : t);
 				// 先刷新源码内容(文件可能在外部被改过);内容变化时清掉行号相关状态
 				api.read(path).then((res) => {
 					if (!res || res.error || res.tooLarge) return;
-					setFile((f) => {
-						if (!f || f.path !== path || f.content === res.content) return f;
-						return { ...f, content: res.content, size: res.size };
+					const cur = tabsRef.current.find((t) => t.path === path);
+					patchTab(path, (t) => {
+						if (!t || t.content === res.content) return t;
+						return { ...t, content: res.content, size: res.size };
 					});
-					if (file.content !== res.content) {
-						jumpHistoryRef.current = [];
-						jumpIndexRef.current = -1;
-						lastFocusRef.current = null;
-						setActive(null);
-						setFlash(null);
-					}
+					// 行号可能整体失效:清空当前页的跳转历史与高亮
+					if (cur && cur.content !== res.content) resetFocusState();
 				}).catch(() => { /* 读失败不阻塞解读 */ });
 				api.explain(path, force).then((res) => applyExplainResult(path, res)).catch((err) => failExplain(path, err));
 			};
-			// 解读框右上角关闭:只收起解读板块,源码保持打开
+			const runExplain = () => { if (file) startExplain(file) };
+			// 解读框右上角关闭:只收起解读板块,源码保持打开;
+			// 同时清掉代码区的高亮阴影,恢复纯脚本显示
 			const closeGuide = () => {
-				setFile((f) => f ? { ...f, guideOn: false } : f);
-			};
-			// 源码窗「关闭」:关闭当前文件,解读框随之一起关闭
-			const closeFile = () => {
-				setFile(null);
+				patchActive((f) => f ? { ...f, guideOn: false } : f);
 				setActive(null);
 				setFlash(null);
-				setJumpLine(null);
 				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
-				if (itemFlashTimerRef.current !== null) { clearTimeout(itemFlashTimerRef.current); itemFlashTimerRef.current = null }
-				if (jumpLineTimerRef.current !== null) { clearTimeout(jumpLineTimerRef.current); jumpLineTimerRef.current = null }
-				jumpHistoryRef.current = [];
-				jumpIndexRef.current = -1;
-				lastFocusRef.current = null;
+			};
+			// 关闭页签:若关的是当前页,自动切到相邻页签;全部关闭回到 tree-only。
+			// 预览 tab 不受影响(保留在页签栏)
+			const closeTab = (path) => {
+				const idx = tabsRef.current.findIndex((t) => t.path === path);
+				if (idx < 0) return;
+				const next = tabsRef.current.filter((t) => t.path !== path);
+				commitTabs(next);
+				if (activePathRef.current === path) {
+					const fallback = next[idx] || next[idx - 1] || null;
+					resetFocusState();
+					if (previewRef.current) setPreviewActiveBoth(false);
+					setActivePath(fallback ? fallback.path : null);
+					activePathRef.current = fallback ? fallback.path : null;
+				}
+			};
+			// 源码窗「关闭」:预览激活时关预览;否则关闭当前页签
+			const closeFile = () => {
+				if (previewFile && previewFile === file) {
+					closePreview();
+					return;
+				}
+				if (file) closeTab(file.path);
 			};
 
 			const lineFuncAt = (lineNo) => {
@@ -1788,12 +2131,30 @@ html[data-cg-panel-open] [data-phase=active] {
 				const lineH = el ? (el.getBoundingClientRect().height || 21) : 21;
 				return Math.max(1, Math.round(pane.scrollTop / lineH) + 1);
 			};
-			// 所有跳转统一入口:记录出发点+落点入历史栈 → 滚动定位 → 目标行闪烁。
-			// 出发点优先取"最近交互行"(用户实际点击的那行),没有才用滚动位置折算
+			// 函数跳转目标行:start 可能是装饰器行,向后找定义行
+			// (跳转落在定义行更直观;高亮范围仍从装饰器行起)。覆盖
+			// Python/JS/TS/Go(func,含 receiver)/Rust(fn) 等常见定义形式
+			const jumpTargetOf = (fn) => {
+				if (!file || !file.content) return fn.start;
+				const lines = String(file.content).replace(/\r\n/g, '\n').split('\n');
+				for (let k = fn.start; k <= Math.min(lines.length, fn.start + 20); k++) {
+					if (/^\s*(?:async\s+)?def\s/.test(lines[k - 1])
+						|| /^\s*(?:export\s+)?(?:async\s+)?function\s/.test(lines[k - 1])
+						|| /^\s*(?:func|fn)\s/.test(lines[k - 1])
+						|| /^\s*class\s/.test(lines[k - 1])
+						|| /^\s*(?:const|let|var)\s/.test(lines[k - 1])) return k;
+				}
+				return fn.start;
+			};
+			// 所有跳转统一入口(当前文件内):记录出发点+落点入历史栈 →
+			// 滚动定位 → 目标行闪烁。出发点优先取"最近交互行"
+			// (用户实际点击的那行),没有才用滚动位置折算
 			const navigateTo = (line, from) => {
 				const arr = jumpHistoryRef.current;
 				const idx = jumpIndexRef.current;
-				const origin = from !== undefined && from !== null ? from : (lastFocusRef.current !== null ? lastFocusRef.current : currentLineOf());
+				const origin = from !== undefined && from !== null
+					? from
+					: (lastFocusRef.current !== null ? lastFocusRef.current : currentLineOf());
 				arr.length = idx + 1; // 截断"前进"分支
 				if (arr[arr.length - 1] !== origin) arr.push(origin);
 				if (arr[arr.length - 1] !== line) arr.push(line);
@@ -1802,15 +2163,17 @@ html[data-cg-panel-open] [data-phase=active] {
 				jumpToLine(line);
 				flashJumpLine(line);
 			};
-			// Ctrl+点击标识符 → 跳转到其定义:优先用已解析的函数表(签名已校正),
-			// 否则正则回退 def/class/function/const 等定义行
+			// Ctrl+点击标识符 → 跳转到其定义(当前文件内):优先用已解析的函数表
+			// (签名已校正),否则正则回退 def/class/function/const 等定义行
 			const jumpToDef = (name, fromLine) => {
 				if (!file || !file.content) return;
 				const fns = file.functions || [];
 				const hit = fns.find((f) => f.name === name || String(f.name).split('.').pop() === name);
-				if (hit) { navigateTo(hit.start, fromLine); return }
+				if (hit) { navigateTo(jumpTargetOf(hit), fromLine); return }
 				const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-				const defRe = new RegExp('(?:^|\\s)(?:def|class)\\s+' + esc + '\\b|(?:^|\\s)' + esc + '\\s*=|(?:^|\\s)(?:function|const|let|var)\\s+' + esc + '\\b');
+				// 定义形式:Python def/class · Go func(可带 receiver) · Rust fn ·
+				// JS/TS function/const/let/var · 赋值 name =
+				const defRe = new RegExp('(?:^|\\s)(?:def|class|fn)\\s+' + esc + '\\b|(?:^|\\s)func\\s+(?:\\([^)]*\\)\\s*)?' + esc + '\\b|(?:^|\\s)' + esc + '\\s*=|(?:^|\\s)(?:function|const|let|var)\\s+' + esc + '\\b');
 				const lines = String(file.content).replace(/\r\n/g, '\n').split('\n');
 				for (let i = 0; i < lines.length; i++) {
 					if (defRe.test(lines[i])) { navigateTo(i + 1, fromLine); return }
@@ -1821,7 +2184,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				// 点击的是变量名时,交给变量定位逻辑,不重复跳转函数
 				if (e.target.closest('.cg-var')) return;
 				setActive(i);
-				if (file && file.functions && file.functions[i]) navigateTo(file.functions[i].start);
+				if (file && file.functions && file.functions[i]) navigateTo(jumpTargetOf(file.functions[i]));
 			};
 
 			// 多级回退搜索变量出现行:函数范围内精确匹配 → 函数范围内首标识符 →
@@ -1884,7 +2247,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const flashGuideItem = (idx, lineNo) => {
 				const guideEl = guideRef.current;
 				const card = guideEl ? guideEl.querySelector('.cg-card[data-idx="' + idx + '"]') : null;
-				if (!card) return;
+				if (!card) return false;
 				const fn = file && file.functions ? file.functions[idx] : null;
 				const lis = card.querySelectorAll('.cg-card-flow-md li');
 				const steps = fn ? stepsOf(fn) : null;
@@ -1952,7 +2315,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 			const onLineClick = (lineNo, e) => {
 				lastFocusRef.current = lineNo;
-				// Ctrl/⌘+点击:跳转到所点标识符的定义处
+				// Ctrl/⌘+点击:跳转到所点标识符的定义处(当前文件内)
 				if (e && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
 					const pane = codePaneRef.current;
 					if (pane) {
@@ -1964,11 +2327,14 @@ html[data-cg-panel-open] [data-phase=active] {
 					}
 				}
 				const i = lineFuncAt(lineNo);
-				setActive(i);
-				if (i !== null) {
+				if (i !== null && file && file.guideOn) {
+					// 仅当解读面板已打开时才联动:高亮代码区 + 闪烁对应解读卡片;
+					// 面板收起时点代码行 = 纯脚本浏览(Ctrl+点击/Alt+←/→ 照常)
+					setActive(i);
 					setTab('guide');
-					// 等解读页渲染完成后再定位并闪烁对应解读项
 					setTimeout(() => flashGuideItem(i, lineNo), 80);
+				} else {
+					setActive(null);
 				}
 			};
 
@@ -2011,16 +2377,17 @@ html[data-cg-panel-open] [data-phase=active] {
 						const min = codeFloorFor(s.pane, !!(file && file.guideOn));
 						const w = Math.max(min, Math.min(dragMaxOf(s.pane.tree + PANE_DIV_W), drag.startW - dx));
 						if (file && file.guideOn) {
-							// 源码与解读按拖动前的比例一起增宽
-							const ratio = drag.startGuideW / Math.max(1, drag.startCodeW);
-							const guideW = Math.max(PANE_MIN_PX, Math.min(Math.round(w * ratio), w - PANE_DIV_W - PANE_MIN_PX));
+							// 源码与解读按拖动前的比例同时变宽/变窄
+							// (各自最小 240:guide 上限 = w-分栏线-240)
+							const gRatio = drag.startGuideW / Math.max(1, drag.startCodeW - PANE_DIV_W);
+							const guideW = Math.max(PANE_MIN_PX, Math.min(Math.round((w - PANE_DIV_W) * gRatio), w - PANE_DIV_W - PANE_MIN_PX));
 							store.pane = { ...store.pane, code: w, guide: guideW };
 						} else {
 							store.pane = { ...store.pane, code: w };
 						}
 					}
 				} else if (drag.kind === 'code') {
-					// 源码|解读分栏线:源码区总宽不变,只重新划分两者
+					// 源码|解读分栏线:源码区总宽不变,只重新划分两者(各窗最小 240)
 					const sourceW = Math.max(PANE_MIN_PX, Math.min(drag.startCodeW - PANE_DIV_W - PANE_MIN_PX, drag.startSourceW + dx));
 					store.pane = { ...store.pane, guide: drag.startCodeW - PANE_DIV_W - sourceW };
 				} else if (drag.kind === 'tree') {
@@ -2058,7 +2425,7 @@ html[data-cg-panel-open] [data-phase=active] {
 					const children = tree.cache.get(tree.rootPath);
 					if (children) {
 						for (const child of children) {
-							rows.push(react.createElement(TreeNode, { key: child.path, entry: child, depth: 1, tree, onToggle: toggleDir, onOpen: openFile }));
+							rows.push(react.createElement(TreeNode, { key: child.path, entry: child, depth: 1, tree, onToggle: toggleDir, onOpen: openFile, onPreview: previewEntry }));
 						}
 					} else if (!tree.loading.has(tree.rootPath) && tree.errors[tree.rootPath]) {
 						rows.push(react.createElement('div', { key: 'err', className: 'cg-trow-error', style: { paddingLeft: 16 } }, tree.errors[tree.rootPath]));
@@ -2078,8 +2445,8 @@ html[data-cg-panel-open] [data-phase=active] {
 						key: m.path,
 						className: 'cg-trow' + (tree && tree.selected === m.path ? ' cg-trow-sel' : ''),
 						style: { paddingLeft: 6 },
-						onClick: () => m.type === 'directory' ? (setQuery(''), toggleDir(m.path)) : openFile(m),
-						title: m.path,
+						onClick: (e) => m.type === 'directory' ? (setQuery(''), toggleDir(m.path)) : (e.detail >= 2 ? openFile(m) : previewEntry(m)),
+						title: m.path + (m.type === 'directory' ? '' : '\n单击预览 · 双击打开'),
 					},
 						react.createElement('span', { className: 'cg-node-icon' + (m.type === 'directory' ? ' cg-trow-dir' : '') }, m.type === 'directory' ? react.createElement(Icon, { name: 'folder', size: 14 }) : react.createElement(FileTypeIcon, { entry: m, size: 14 })),
 						react.createElement('span', { className: 'cg-trow-name' }, m.name),
@@ -2191,7 +2558,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				);
 			};
 
-			// 调用图节点点击:直接定位到对应代码行并高亮,不切换标签页
+			// 调用图节点点击:直接定位到对应代码行并高亮(当前文件内)
 			const onGraphNodeClick = (rawLabel) => {
 				if (!file || !file.functions) return;
 				const compact = (s) => String(s || '').replace(/\s+/g, '');
@@ -2199,13 +2566,14 @@ html[data-cg-panel-open] [data-phase=active] {
 				const i = file.functions.findIndex((f) => compact(f.name) === needle);
 				if (i < 0) return;
 				setActive(i);
-				navigateTo(file.functions[i].start);
+				navigateTo(jumpTargetOf(file.functions[i]));
 			};
 
 			const renderCallGraph = () => {
 				if (file.explaining) return react.createElement(GuideLoading);
 				if (!file.callGraph) return react.createElement('div', { className: 'cg-empty' }, '该文件没有生成调用图');
-				return react.createElement(GraphView, { code: file.callGraph, onNodeClick: onGraphNodeClick });
+				// key=文件路径:切页签时调用图视图(缩放/平移)随文件重置
+				return react.createElement(GraphView, { key: file.path, filePath: file.path, code: file.callGraph, onNodeClick: onGraphNodeClick });
 			};
 
 			if (!s.open) return null;
@@ -2239,6 +2607,39 @@ html[data-cg-panel-open] [data-phase=active] {
 						react.createElement('div', { className: 'cg-split' },
 							// 源码窗在左;解读打开时源码让出一块给解读,关闭时源码向右扩展收回
 							react.createElement('div', { className: 'cg-code-pane', style: { width: sourceWidthOf(s.pane, showGuide) + 'px' } },
+								(tabs.length > 0 || !!previewFile) ? react.createElement('div', { className: 'cg-tabsbar' },
+									tabs.map((t) => react.createElement('div', {
+										key: t.path,
+										className: 'cg-filetab' + (file && t.path === file.path ? ' cg-filetab-on' : ''),
+										title: t.path,
+										onClick: () => { if (!file || t.path !== file.path) switchTo(t.path) },
+									},
+										react.createElement(FileTypeIcon, { entry: t, size: 12 }),
+										react.createElement('span', { className: 'cg-filetab-name' }, t.name),
+										t.explaining ? react.createElement('span', { className: 'cg-filetab-dot', title: '解读生成中' }, '…') : null,
+										react.createElement('button', {
+											className: 'cg-filetab-x',
+											title: '关闭',
+											onClick: (e) => { e.stopPropagation(); closeTab(t.path) },
+										}, react.createElement(Icon, { name: 'close', size: 10 })),
+									)),
+									previewFile ? react.createElement('div', {
+										key: '__preview__',
+										className: 'cg-filetab cg-filetab-preview' + (previewFile === file ? ' cg-filetab-on' : ''),
+										title: previewFile.path + '\n预览中 · 单击激活 · 双击固定打开',
+										onClick: () => switchToPreview(),
+										onDoubleClick: () => openFile({ path: previewFile.path, name: previewFile.name, type: 'file' }),
+									},
+										react.createElement(FileTypeIcon, { entry: previewFile, size: 12 }),
+										react.createElement('span', { className: 'cg-filetab-name' }, previewFile.name),
+										previewFile.explaining ? react.createElement('span', { className: 'cg-filetab-dot', title: '解读生成中' }, '…') : null,
+										react.createElement('button', {
+											className: 'cg-filetab-x',
+											title: '关闭预览',
+											onClick: (e) => { e.stopPropagation(); closePreview() },
+										}, react.createElement(Icon, { name: 'close', size: 10 })),
+									) : null,
+								) : null,
 								react.createElement('div', { className: 'cg-pane-head' },
 									react.createElement('span', { className: 'cg-pane-title' }, file.view === 'preview' ? '预览' : '源码'),
 									react.createElement('span', { className: 'cg-pane-path' }, file.path),
@@ -2248,12 +2649,12 @@ html[data-cg-panel-open] [data-phase=active] {
 									file && !file.reading && !file.error && !file.tooLarge && isExplainable(file.name)
 										? react.createElement('button', { className: 'cg-btn', title: file.guideOn ? '重新解读' : '解读', onClick: runExplain }, file.guideOn ? '重新解读' : '解读')
 										: null,
-									react.createElement('button', { className: 'cg-btn', title: '关闭', onClick: closeFile }, '关闭'),
+									react.createElement('button', { className: 'cg-btn', title: previewFile === file ? '关闭预览' : '关闭页签', onClick: closeFile }, '关闭'),
 								),
 								renderCode(),
 							),
 							showGuide ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'code' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('code') }) : null,
-							showGuide ? react.createElement('div', { className: 'cg-guide-pane', style: { width: s.pane.guide + 'px' } },
+							showGuide ? react.createElement('div', { className: 'cg-guide-pane', style: { width: Math.max(PANE_MIN_PX, Math.min(s.pane.guide, effCodeOf(s.pane, true) - PANE_DIV_W - PANE_MIN_PX)) + 'px' } },
 								react.createElement('div', { className: 'cg-tabs' },
 									react.createElement('button', { className: 'cg-tab' + (tab === 'guide' ? ' cg-tab-on' : ''), onClick: () => setTab('guide') }, '函数解读'),
 									react.createElement('button', { className: 'cg-tab' + (tab === 'graph' ? ' cg-tab-on' : ''), onClick: () => setTab('graph') }, '调用图'),

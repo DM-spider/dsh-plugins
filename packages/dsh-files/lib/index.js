@@ -48,8 +48,7 @@ const SINGLE_PROMPT = [
   '}',
   '要求:',
   '- start/end 是函数在源码中的真实行号(从 1 开始)',
-  '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复',
-  '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
+  '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复;如果代码里确实存在函数,严禁返回空数组,仔细逐段找,找到为止',
   '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 是该步骤对应的代码行范围(函数内、从小到大、不重叠);没有步骤则 flow 为空数组',
   '- flow 步骤严禁泛泛写"遍历列表"而不指明遍历哪个变量',
   '- flow 中引用函数调用时,反引号只包裹函数名本身(如 `train_scorecards`),不要带参数和括号;参数如需说明,作为普通文本写在步骤里',
@@ -66,9 +65,7 @@ const OUTLINE_PROMPT = [
   '}',
   '要求:',
   '- start/end 是函数在完整文件中的真实绝对行号(从 1 开始),用户会告诉你本段的起始行号',
-  '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来',
-  '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
-  '- 不要重复,按行号升序排列',
+  '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复;如果代码里确实存在函数,严禁返回空数组,仔细逐段找,找到为止',
 ].join('\n')
 
 const EXPLAIN_PROMPT = [
@@ -457,38 +454,53 @@ export function apply(ctx) {
   // match) near the claimed start. For Python files the END line is then
   // derived structurally: a function ends where indentation returns to the
   // level of its def line (not merely "the line before the next def").
+  // Decorated signatures (e.g. "@property\ndef foo"): multi-line signatures
+  // never match a single physical line, so we anchor on the LAST signature
+  // line (the def/function line) and then walk UP to absorb the decorator
+  // lines into start — jumping to the function lands on its decorator, and
+  // line-range highlight covers the whole decorated definition.
   const correctRanges = (functions, lines, langHint) => {
     const norm = (s) => String(s).replace(/\s+/g, '')
     for (const f of functions) {
       if (!f.signature) continue
-      const sig = norm(String(f.signature).split('\n')[0])
-      if (sig.length < 4) continue
+      const sigAll = String(f.signature).split('\n').map((x) => norm(x)).filter((x) => x.length >= 4)
+      if (sigAll.length === 0) continue
+      const anchor = sigAll[sigAll.length - 1] // def/function 行是可靠锚点
       let found = -1
       const lo = Math.max(1, f.start - 10)
       const hi = Math.min(lines.length, f.start + 10)
       for (let i = lo; i <= hi; i++) {
-        if (norm(lines[i - 1]).startsWith(sig)) { found = i; break }
+        if (norm(lines[i - 1]).startsWith(anchor)) { found = i; break }
       }
       if (found === -1) {
         for (let i = 1; i <= lines.length; i++) {
-          if (norm(lines[i - 1]).startsWith(sig)) { found = i; break }
+          if (norm(lines[i - 1]).startsWith(anchor)) { found = i; break }
         }
       }
-      if (found > 0) f.start = found
+      if (found > 0) {
+        // 向前收装饰器/注解行(@ 开头),让 start 覆盖整个装饰定义
+        let s = found
+        while (s > 1 && /^\s*@/.test(lines[s - 2])) s--
+        f.start = s
+      }
       if (f.end < f.start) f.end = f.start
     }
     functions.sort((a, b) => a.start - b.start || a.end - b.end)
     const isPython = langHint === 'py' || langHint === 'pyw'
       || /^\s*def\s/m.test(lines.slice(0, Math.min(200, lines.length)).join('\n'))
     if (isPython) {
-      // 缩进规则:函数在缩进回到 def 行层级时结束
+      // 缩进规则:函数在缩进回到 def 行层级时结束。
+      // start 可能是装饰器行,缩进基准必须取 def 行本身
       for (const f of functions) {
-        const defLine = lines[f.start - 1] ?? ''
-        const dm = /^(\s*)/.exec(defLine)
+        let defIdx = -1
+        for (let k = f.start; k <= Math.min(lines.length, f.start + 20); k++) {
+          if (/^\s*(?:async\s+)?def\s/.test(lines[k - 1])) { defIdx = k; break }
+        }
+        if (defIdx < 0) continue
+        const dm = /^(\s*)/.exec(lines[defIdx - 1])
         const defIndent = dm ? dm[1].length : 0
-        if (!/^\s*def\s/.test(defLine) && !/^\s*@/.test(defLine)) continue
-        let lastContent = f.start
-        for (let ln = f.start + 1; ln <= lines.length; ln++) {
+        let lastContent = defIdx
+        for (let ln = defIdx + 1; ln <= lines.length; ln++) {
           const line = lines[ln - 1]
           if (/^\s*$/.test(line)) continue
           // 多行签名/长表达式的续行收尾符(只含括号逗号冒号)不算回到基级
@@ -500,6 +512,71 @@ export function apply(ctx) {
         if (lastContent >= f.start) f.end = lastContent
       }
     } else {
+      // 花括号语言:从函数定义向后找"括号深度归零处的 {"作为函数体起点,
+      // 再做花括号配对精确计算函数体结束行(剥离字符串/行注释/块注释干扰)。
+      // 单行箭头函数等无花括号的形式保持模型给的 end
+      // 找"函数体的 {":仅当签名括号已闭合(paren=0)时才接受;若某行扫完
+      // 括号已闭合却仍无 {,说明是单行箭头函数等无花括号形式,立即放弃,
+      // 避免跨行误配到下一个函数或普通代码的 {
+      const bodyBraceLine = (fromLine) => {
+        let paren = 0
+        for (let ln = fromLine; ln <= Math.min(lines.length, fromLine + 30); ln++) {
+          const line = lines[ln - 1]
+          let inStr = null
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i]
+            if (inStr) {
+              if (ch === '\\') { i++; continue }
+              if (ch === inStr) inStr = null
+              continue
+            }
+            if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue }
+            if (ch === '/' && line[i + 1] === '/') break // 行注释
+            if (ch === '(') paren++
+            else if (ch === ')') paren = Math.max(0, paren - 1)
+            else if (ch === '{' && paren === 0) return ln
+          }
+          if (paren === 0) return 0
+        }
+        return 0
+      }
+      const braceEndLine = (braceLine) => {
+        let depth = 0
+        let inBlock = false
+        for (let ln = braceLine; ln <= lines.length; ln++) {
+          const line = lines[ln - 1]
+          let inStr = null
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i]
+            const nx = line[i + 1]
+            if (inBlock) {
+              if (ch === '*' && nx === '/') { inBlock = false; i++; continue }
+              continue
+            }
+            if (inStr) {
+              if (ch === '\\') { i++; continue }
+              if (ch === inStr) inStr = null
+              continue
+            }
+            if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue }
+            if (ch === '/' && nx === '/') break // 行注释
+            if (ch === '/' && nx === '*') { inBlock = true; i++; continue }
+            if (ch === '{') depth++
+            else if (ch === '}') {
+              depth--
+              if (depth === 0) return ln
+            }
+          }
+        }
+        return 0
+      }
+      for (const f of functions) {
+        const brace = bodyBraceLine(f.start)
+        if (brace <= 0) continue
+        const end = braceEndLine(brace)
+        if (end > 0 && end >= f.start) f.end = end
+      }
+      // 重叠修正兜底:函数区间不得越过下一个函数起点
       for (let i = 1; i < functions.length; i++) {
         const prev = functions[i - 1]
         const cur = functions[i]
