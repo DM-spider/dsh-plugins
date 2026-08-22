@@ -27,9 +27,15 @@ One Dark Pro 风格主题（配色参考 VS Code [One Dark Pro](https://github.c
   选择「深色」或「跟随系统（系统为深色）」即得到 One Dark Pro；
 - **偏好照常持久化**：不写入自定义主题 id，重启后自动重新叠加，无偏好冲突。
 
+## 使用
+
+设置 → 通用 → 「主题」行（在「外观」下方）：点 **One Dark Pro** 方块开/关，立即生效，
+选择状态存 localStorage，重启后保持。开启时深色档即为 One Dark Pro 配色；
+「外观」仍管 浅色/深色/跟随系统，本开关只决定深色档是否用 One Dark Pro。
+
 ## 临时停用
 
-浏览器控制台执行（或任意页面 localStorage）：
+除设置行开关外，也可以直接在浏览器控制台执行（或任意页面 localStorage）：
 
 ```js
 localStorage.setItem('dsh-theme-onedarkpro.enabled', '0')
@@ -51,5 +57,5 @@ pnpm install
 ## 结构
 
 - `lib/index.js` — host 半部（空壳，本插件无宿主逻辑）
-- `lib/client.js` — web client 半部：`--dsw-alias-*` 与 `--shiki-*` 双档覆盖表 + 叠加注册
+- `lib/client.js` — web client 半部：`--dsw-alias-*` 与 `--shiki-*` 双档覆盖表 + 深色档叠加注册 + 设置页「主题」开关行
 - `cordis.patch.yml` — bundle 补丁，把插件行插入 profile 的 host 组合

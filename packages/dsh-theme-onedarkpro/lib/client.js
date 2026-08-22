@@ -4,12 +4,12 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+		var react = require("react");
 
 		// ---------- One Dark Pro 配色(参考 VSCode One Dark Pro) ----------
 		// 每个 token 一对 { light, dark }:浅色档给 DSH 默认表达式(浅色观感
 		// 完全不变),深色档给 One Dark Pro 配色。覆盖层只作用于深色方案,
-		// 设置里的「外观」选择与持久化偏好不受影响——选「深色」或
-		// 「跟随系统(系统为深色)」即得到 One Dark Pro。
+		// 设置里的「外观」选择与持久化偏好不受影响。
 		const OVERRIDES = {
 			// 背景
 			'--dsw-alias-bg-base': { light: 'var(--dsw-static-neutral-bluish-00)', dark: '#282C34' },
@@ -111,15 +111,53 @@ window.__ModuleLoader__.load({
 			'--shiki-token-string-expression': { light: '#2b8a3e', dark: '#98C379' },
 		};
 
-		// 开关:localStorage 显式置 '0' 可临时停用(无需卸载插件)
-		const DISABLE_KEY = "dsh-theme-onedarkpro.enabled";
+		// 开关:localStorage 持久化('0' = 关,缺省/其它 = 开);设置行点击即时切换
+		const KEY = "dsh-theme-onedarkpro.enabled";
 
-		exports.inject = ["theme"];
+		exports.inject = ["theme", "slots"];
 		exports.apply = function (ctx) {
-			ctx.effect(() => {
-				if (typeof localStorage !== "undefined" && localStorage.getItem(DISABLE_KEY) === "0") return;
-				return ctx.theme.overrideTokens("dsh-theme-onedarkpro", OVERRIDES);
-			}, "one-dark-pro: 深色档配色覆盖");
+			const theme = ctx.theme;
+			let enabled = typeof localStorage === "undefined" ? false : localStorage.getItem(KEY) !== "0";
+			let off = null;
+			const applyOverride = () => { if (off === null) off = theme.overrideTokens("dsh-theme-onedarkpro", OVERRIDES) };
+			const removeOverride = () => { if (off !== null) { off(); off = null } };
+			if (enabled) applyOverride();
+			ctx.effect(() => () => removeOverride(), "one-dark-pro: 卸载时撤销覆盖");
+
+			// 设置 → 通用:「主题」行,One Dark Pro 开关(紧挨「外观」之后)
+			const Row = () => {
+				const [on, setOn] = react.useState(enabled);
+				const toggle = () => {
+					enabled = !enabled;
+					try { localStorage.setItem(KEY, enabled ? "1" : "0") } catch (_) { /* 忽略存储失败 */ }
+					if (enabled) applyOverride(); else removeOverride();
+					setOn(enabled);
+				};
+				return react.createElement("div", {
+					style: {
+						display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+						padding: "12px 16px", borderTop: "1px solid var(--dsw-alias-border-l1)",
+					},
+				},
+					react.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: "var(--dsw-alias-label-primary)" } }, "主题"),
+					react.createElement("button", {
+						type: "button",
+						onClick: toggle,
+						title: "深色档使用 One Dark Pro 配色(点击开/关)",
+						style: {
+							display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 14px",
+							borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600,
+							border: "1px solid " + (on ? "var(--dsw-alias-brand-primary)" : "var(--dsw-alias-border-l2)"),
+							background: on ? "var(--dsw-alias-interactive-bg-active)" : "var(--dsw-alias-bg-layer-1)",
+							color: on ? "var(--dsw-alias-brand-primary)" : "var(--dsw-alias-label-secondary)",
+						},
+					}, on ? "● " : "○ ", "One Dark Pro"),
+				);
+			};
+			ctx.slots.inject("settings.general.item", () => ctx.slots.register(
+				{ name: "settings.general.item", id: "onedarkpro", order: 15, label: "One Dark Pro" },
+				Row,
+			));
 		};
 		return module.exports;
 	}
