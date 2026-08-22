@@ -24,14 +24,14 @@ html[data-cg-panel-open] [data-phase=active] {
   box-shadow: -4px 0 16px rgba(0,0,0,.12);
   color: var(--dsw-alias-label-primary);
   font-size: 13px; line-height: 1.45;
-  max-width: 78vw; min-width: 420px;
+  max-width: calc(100vw - 90px);
   pointer-events: auto;
   box-sizing: border-box;
 }
 .cg-panel * { box-sizing: border-box; }
 .cg-resize {
   position: absolute; left: -4px; top: 0; bottom: 0; width: 8px;
-  cursor: col-resize; z-index: 5;
+  cursor: col-resize; z-index: 5; touch-action: none;
 }
 .cg-resize:hover { background: var(--dsw-alias-brand-primary); opacity: .35; }
 .cg-collapse-tab {
@@ -47,6 +47,7 @@ html[data-cg-panel-open] [data-phase=active] {
   cursor: pointer; z-index: 6;
 }
 .cg-collapse-tab:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-brand-primary); }
+.cg-collapse-tab-on { background: var(--dsw-alias-brand-primary); color: #fff; border-color: var(--dsw-alias-brand-primary); }
 .cg-drag-capture {
   position: fixed; inset: 0; z-index: 9999; cursor: col-resize;
   background: transparent;
@@ -68,8 +69,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-iconbtn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
 .cg-body { flex: 1; display: flex; min-height: 0; }
 .cg-tree {
-  width: 170px; flex: none; overflow: auto;
-  border-right: 1px solid var(--dsw-alias-border-l1);
+  flex: none; overflow: auto;
   padding: 4px 0 8px; user-select: none;
 }
 .cg-trow {
@@ -83,7 +83,20 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-trow-dir { color: var(--dsw-alias-brand-primary); }
 .cg-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .cg-split { flex: 1; display: flex; min-height: 0; }
-.cg-code-pane { flex: 1 1 50%; display: flex; flex-direction: column; min-width: 0; }
+.cg-divider {
+  flex: none; width: 5px; position: relative;
+  cursor: col-resize; touch-action: none; z-index: 1;
+}
+.cg-divider::before {
+  content: ''; position: absolute; left: -4px; right: -4px; top: 0; bottom: 0;
+}
+.cg-divider::after {
+  content: ''; position: absolute; left: 2px; right: 2px; top: 0; bottom: 0;
+  background: var(--dsw-alias-border-l1);
+  transition: background .12s ease;
+}
+.cg-divider:hover::after, .cg-divider-on::after { background: var(--dsw-alias-brand-primary); }
+.cg-code-pane { flex: none; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 .cg-pane-head {
   display: flex; align-items: center; gap: 6px;
   padding: 4px 8px; flex: none;
@@ -92,25 +105,49 @@ html[data-cg-panel-open] [data-phase=active] {
 }
 .cg-pane-head .cg-pane-title { font-weight: 600; color: var(--dsw-alias-label-primary); flex: none; }
 .cg-pane-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.cg-pane-act {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 5px; background: transparent;
+  color: var(--dsw-alias-brand-primary); font-size: 12px; cursor: pointer;
+}
+.cg-pane-act:hover { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-brand-primary); }
+.cg-pane-act-on { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-brand-primary); }
 .cg-code {
   flex: 1; overflow: auto; margin: 0;
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
-  font-size: 12px; line-height: 18px;
+  font-size: 14px; line-height: 21px;
   background: var(--dsw-alias-bg-layer-1);
 }
 .cg-line { display: flex; white-space: pre; min-width: max-content; cursor: pointer; }
 .cg-line:hover { background: var(--dsw-alias-bg-layer-2); }
 .cg-ln {
-  flex: none; width: 46px; padding-right: 10px; text-align: right;
+  flex: none; width: 52px; padding-right: 10px; text-align: right;
   color: var(--dsw-alias-label-secondary); user-select: none;
   border-right: 1px solid var(--dsw-alias-border-l1); margin-right: 10px;
   background: var(--dsw-alias-bg-overlay);
   position: sticky; left: 0;
 }
 .cg-code-text { padding-right: 14px; }
+.cg-hl .cg-tok-c { color: var(--cg-hl-comment, #7f848e); font-style: italic; }
+.cg-hl .cg-tok-s { color: var(--cg-hl-string, #98c379); }
+.cg-hl .cg-tok-n { color: var(--cg-hl-number, #d19a66); }
+.cg-hl .cg-tok-k { color: var(--cg-hl-keyword, #c678dd); }
+.cg-hl .cg-tok-b { color: var(--cg-hl-builtin, #56b6c2); }
+.cg-hl .cg-tok-t { color: var(--cg-hl-type, #e5c07b); }
+.cg-hl .cg-tok-f { color: var(--cg-hl-func, #61afef); }
+.cg-hl .cg-tok-p { color: var(--cg-hl-prop, #e06c75); }
+.cg-hl .cg-tok-o { color: var(--cg-hl-operator, #abb2bf); }
+.cg-hl .cg-tok-a { color: var(--cg-hl-attr, #d19a66); }
+.cg-hl .cg-tok-d { color: var(--cg-hl-directive, #c678dd); }
 .cg-line-hi { background: var(--dsw-alias-interactive-bg-hover); }
 .cg-line-hi .cg-ln { color: var(--dsw-alias-brand-primary); font-weight: 700; }
-.cg-guide-pane { flex: 1 1 50%; display: flex; flex-direction: column; min-width: 0; border-left: 1px solid var(--dsw-alias-border-l1); }
+.cg-line-jump { animation: cg-line-jump 1.5s ease-out 1; }
+@keyframes cg-line-jump {
+  0% { background: rgba(59, 130, 246, .45); }
+  100% { background: transparent; }
+}
+.cg-guide-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 .cg-tabs { display: flex; gap: 2px; padding: 4px 8px 0; flex: none; border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .cg-tab {
   padding: 4px 10px; border: none; border-bottom: 2px solid transparent;
@@ -198,13 +235,13 @@ html[data-cg-panel-open] [data-phase=active] {
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 .cg-gbtn {
-  padding: 2px 10px; flex: none;
+  padding: 0; width: 24px; height: 24px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid var(--dsw-alias-border-l2); border-radius: 5px;
   background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
-  font-size: 12px; cursor: pointer;
+  font-size: 13px; line-height: 1; cursor: pointer;
 }
 .cg-gbtn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
-.cg-graph-hint { margin-left: auto; color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .cg-graph-viewport {
   flex: 1; overflow: auto; position: relative;
   user-select: none; touch-action: none; cursor: grab;
@@ -433,9 +470,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				react.createElement('div', { className: 'cg-graph-toolbar' },
 					react.createElement('button', { className: 'cg-gbtn', title: '放大', onClick: () => zoomBy(0.2) }, '＋'),
 					react.createElement('button', { className: 'cg-gbtn', title: '缩小', onClick: () => zoomBy(-0.2) }, '－'),
-					react.createElement('button', { className: 'cg-gbtn', title: '复位视图', onClick: reset }, '复位'),
-					react.createElement('button', { className: 'cg-gbtn', title: '复制 mermaid 源码', onClick: onCopy }, copied ? '已复制' : '复制 mermaid'),
-					react.createElement('span', { className: 'cg-graph-hint' }, '点击节点定位函数 · Alt+拖动平移 · 滚轮缩放'),
+					react.createElement('button', { className: 'cg-gbtn', title: '复位视图', onClick: reset }, react.createElement(Icon, { name: 'reset', size: 14 })),
+					react.createElement('button', { className: 'cg-gbtn', title: copied ? '已复制' : '复制 mermaid 源码', onClick: onCopy }, react.createElement(Icon, { name: copied ? 'check' : 'copy', size: 14 })),
 				),
 				react.createElement('div', {
 					className: 'cg-graph-viewport',
@@ -455,11 +491,21 @@ html[data-cg-panel-open] [data-phase=active] {
 		};
 
 		// ---------- shared store ----------
+		// 面板/分栏尺寸存 localStorage:刷新后保持上次布局
 		const store = {
 			open: false,
 			width: 680,
+			paneR: { code: 0.5, tree: 0.25 }, // 源码占主区比例、文件树占面板比例
 			listeners: new Set(),
 		};
+		try {
+			const w = Number(localStorage.getItem('cg-panel-w'));
+			if (Number.isFinite(w) && w >= 420 && w <= 2400) store.width = w;
+			const cr = Number(localStorage.getItem('cg-code-r'));
+			if (Number.isFinite(cr) && cr >= 0.05 && cr <= 0.95) store.paneR.code = cr;
+			const tr = Number(localStorage.getItem('cg-tree-r'));
+			if (Number.isFinite(tr) && tr >= 0.02 && tr <= 0.9) store.paneR.tree = tr;
+		} catch (_) { /* localStorage 不可用时忽略 */ }
 		const emit = () => { for (const fn of Array.from(store.listeners)) fn() };
 		const subscribe = (fn) => { store.listeners.add(fn); return () => { store.listeners.delete(fn) } };
 		const setOpen = (value) => { store.open = !!value; emit() };
@@ -470,12 +516,281 @@ html[data-cg-panel-open] [data-phase=active] {
 			return store;
 		};
 
+		// ---------- 面板/分栏尺寸 ----------
+		const PANEL_MIN_W = 420;      // 面板最小宽度(低于它的松手值回弹)
+		const PANEL_COLLAPSE_W = 280; // 拖到比这更窄(=拖向最右侧)→ 松手收起面板
+		const PANE_MIN_TREE = 110;
+		const PANE_MIN_CODE = 200;
+		const PANE_MIN_GUIDE = 200;
+		const PANE_DIV_W = 5;
+		const panelMaxW = () => Math.max(PANEL_MIN_W, Math.min(window.innerWidth - 90, 2200));
+		// 由面板宽度 + 两个比例算出三个视窗的实际像素宽度:拖分栏线时实时
+		// 生效,整体调宽时按比例同步伸缩(和 VS Code/Cursor 侧栏行为一致)
+		const paneWidths = (panelW, paneR) => {
+			const treeW = Math.max(PANE_MIN_TREE, Math.min(Math.round(panelW * paneR.tree), Math.max(PANE_MIN_TREE, panelW - (PANE_MIN_CODE + PANE_MIN_GUIDE + PANE_DIV_W))));
+			const mainW = panelW - treeW - PANE_DIV_W;
+			const codeW = Math.max(PANE_MIN_CODE, Math.min(Math.round(mainW * paneR.code), mainW - PANE_MIN_GUIDE));
+			return { treeW, mainW, codeW };
+		};
+
+		// ---------- syntax highlighting (self-contained, no runtime deps) ----------
+		// Extension -> language id for source rendering.
+		const HL_EXT = {
+			js: 'js', mjs: 'js', cjs: 'js', jsx: 'js',
+			ts: 'ts', mts: 'ts', cts: 'ts', tsx: 'ts',
+			json: 'json', jsonc: 'json', map: 'json',
+			yaml: 'yaml', yml: 'yaml',
+			py: 'python', pyw: 'python',
+			c: 'c', h: 'c',
+			cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', hxx: 'cpp',
+			java: 'java',
+			go: 'go',
+			rs: 'rust',
+			sh: 'shell', bash: 'shell', zsh: 'shell',
+			sql: 'sql',
+			toml: 'toml',
+			ini: 'ini', cfg: 'ini', conf: 'ini',
+			css: 'css', scss: 'css', less: 'css',
+			html: 'html', htm: 'html',
+			md: 'markdown', markdown: 'markdown', txt: 'text',
+		};
+		const hlLangFor = (name) => {
+			const n = String(name || '').toLowerCase();
+			const i = n.lastIndexOf('.');
+			const ext = i >= 0 ? n.slice(i + 1) : n;
+			return HL_EXT[ext] || '';
+		};
+		// Language configs. Flags: ln=line comment, bl=block comment, bt=backtick,
+		// hs=hash comment, hsAny=hash anywhere, pr=preprocessor #, tr=triple quote,
+		// de=@decorator, dl=$var, ks=quoted-key (json/yaml), ki=bare key: (yaml),
+		// ke=key= (toml/ini), ct=capitalized=type, tg=html tags.
+		const HL = {
+			js: { ln: '//', bl: true, bt: true, kw: 'break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof let new of return static super switch this throw try typeof var void while with yield async await', bn: 'console Math JSON Promise Symbol BigInt Array Object String Number Boolean Function Date RegExp Error TypeError RangeError ReferenceError SyntaxError Map Set WeakMap WeakSet Proxy Reflect Intl URL URLSearchParams AbortController AbortSignal fetch setTimeout setInterval clearTimeout clearInterval queueMicrotask structuredClone atob btoa TextEncoder TextDecoder undefined null NaN Infinity globalThis window document process require module exports Buffer' },
+			ts: { ln: '//', bl: true, bt: true, ct: true, kw: 'break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof let new of return static super switch this throw try typeof var void while with yield async await abstract as asserts declare enum implements infer interface is keyof namespace readonly satisfies type unknown using', bn: 'console Math JSON Promise Symbol BigInt Array Object String Number Boolean Function Date RegExp Error TypeError RangeError ReferenceError SyntaxError Map Set WeakMap WeakSet Proxy Reflect URL fetch setTimeout setInterval clearTimeout clearInterval undefined null NaN Infinity globalThis window document process require module exports Buffer any unknown never void', ty: 'string number boolean object symbol bigint' },
+			json: { ks: true, kw: 'true false null', bn: '' },
+			yaml: { hs: true, ks: true, ki: true, kw: 'true false null yes no on off', bn: '' },
+			python: { hs: true, hsAny: true, tr: true, de: true, ct: true, kw: 'and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case', bn: 'None True False print len range str int float bool list dict set tuple bytes bytearray type object isinstance issubclass super property classmethod staticmethod enumerate zip map filter sorted sum min max abs round pow divmod open input eval exec repr format hash id vars dir getattr setattr hasattr delattr all any next iter reversed slice complex frozenset memoryview Exception ValueError TypeError KeyError IndexError AttributeError RuntimeError StopIteration NotImplementedError ImportError ModuleNotFoundError FileNotFoundError IOError OSError SystemExit KeyboardInterrupt' },
+			c: { ln: '//', bl: true, pr: true, ct: true, kw: 'auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while', bn: 'NULL true false size_t ssize_t int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t ptrdiff_t wchar_t FILE stdin stdout stderr printf fprintf sprintf snprintf scanf fscanf sscanf malloc calloc realloc free memcpy memset memmove strlen strcmp strcpy strcat fopen fclose fread fwrite puts getchar putchar exit abort assert' },
+			cpp: { ln: '//', bl: true, pr: true, ct: true, kw: 'alignas alignof and and_eq asm auto bitand bitor bool break case catch char class compl concept const consteval constexpr constinit const_cast continue co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not not_eq nullptr operator or or_eq private protected public register reinterpret_cast requires return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile wchar_t while xor xor_eq', bn: 'NULL nullptr true false size_t ssize_t int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t ptrdiff_t wchar_t FILE stdin stdout stderr cout cin cerr endl string vector map set unordered_map unordered_set unique_ptr shared_ptr weak_ptr make_unique make_shared move forward static_cast dynamic_cast const_cast reinterpret_cast printf scanf malloc free memcpy memset strlen printf sprintf fprintf puts getchar putchar exit abort assert std' },
+			java: { ln: '//', bl: true, ct: true, kw: 'abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while true false null var record sealed permits yield', bn: 'String System out in err println print printf Math Integer Double Long Short Byte Float Character Boolean Object Class Exception RuntimeException IllegalArgumentException NullPointerException ArrayList HashMap HashSet List Map Set Optional StringBuilder Arrays Collections Thread Runnable' },
+			go: { ln: '//', bl: true, bt: true, ct: true, kw: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var', bn: 'true false iota nil error string bool byte rune int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 uintptr float32 float64 complex64 complex128 any comparable len cap append copy make new delete panic recover print println sprintf fmt strings strconv sort time os io errors math' },
+			rust: { ln: '//', bl: true, ct: true, kw: 'as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while', bn: 'Some None Ok Err String Vec Box Rc Arc RefCell HashMap HashSet Option Result print println format vec macro_rules' },
+			shell: { hs: true, dl: true, kw: 'if then else elif fi for while until do done case esac function in select time coproc', bn: 'echo printf read cd ls pwd cat grep sed awk find cp mv rm mkdir touch chmod chown export source unset test exit return set shift' },
+			sql: { ln: '--', bl: true, kw: 'select from where insert into values update set delete create table alter add drop index view join inner left right outer on as and or not null primary key foreign references unique default check constraint group by order having limit offset union all distinct case when then else end exists between like in is returning with recursive cast begin commit rollback transaction', bn: 'true false null' },
+			toml: { hs: true, hsAny: true, ke: true, kw: 'true false', bn: '' },
+			ini: { hs: true, hsAny: true, ke: true, kw: 'true false', bn: '' },
+			css: { bl: true, kw: '', bn: '' },
+			html: { tg: true, kw: '', bn: '' },
+		};
+		const HL_SETS = {};
+		const hlSet = (s) => {
+			const set = new Set();
+			String(s || '').split(/\s+/).forEach((w) => { if (w) set.add(w) });
+			return set;
+		};
+		Object.keys(HL).forEach((k) => {
+			HL_SETS[k] = { kw: hlSet(HL[k].kw), bn: hlSet(HL[k].bn), ty: hlSet(HL[k].ty) };
+		});
+		const hlSpan = (cls, html) => '<span class="cg-tok-' + cls + '">' + html + '</span>';
+		const HL_MAX = 300000;
+		const HL_OP_RE = /^(===|!==|>>>|<<=|>>=|=>|\*\*|\+\+|--|&&|\|\||\?\?|\?\.|<=|>=|==|!=|<<|>>|\+=|-=|\*=|\/=|%=|\?|:|\.\.\.|\+|-|\*|\/|%|<|>|!|&|\||\^|~|=)/;
+		const highlight = (text, lang) => {
+			const cfg = HL[lang];
+			if (!cfg) return escapeHtml(text);
+			const src = String(text);
+			if (src.length > HL_MAX) return escapeHtml(text);
+			const sets = HL_SETS[lang];
+			const n = src.length;
+			let html = '';
+			let i = 0;
+			let prevCh = '';
+			let multi = null;
+			while (i < n) {
+				if (multi) {
+					const j = src.indexOf(multi.close, i);
+					if (j === -1) { html += hlSpan(multi.cls, escapeHtml(src.slice(i - multi.openLen))); i = n; break }
+					html += hlSpan(multi.cls, escapeHtml(src.slice(i - multi.openLen, j + multi.close.length)));
+					prevCh = src[j + multi.close.length - 1];
+					i = j + multi.close.length;
+					multi = null;
+					continue;
+				}
+				const c = src[i];
+				const two = src.slice(i, i + 2);
+				if (cfg.ln && two === cfg.ln) {
+					const j = src.indexOf('\n', i);
+					const end = j === -1 ? n : j;
+					html += hlSpan('c', escapeHtml(src.slice(i, end)));
+					prevCh = '\n';
+					i = end; continue;
+				}
+				if (cfg.bl && two === '/*') {
+					const j = src.indexOf('*/', i + 2);
+					if (j === -1) { html += hlSpan('c', escapeHtml(src.slice(i))); i = n; break }
+					html += hlSpan('c', escapeHtml(src.slice(i, j + 2)));
+					prevCh = '/';
+					i = j + 2; continue;
+				}
+				if (cfg.tg && src.slice(i, i + 4) === '<!--') {
+					const j = src.indexOf('-->', i + 4);
+					const end = j === -1 ? n : j + 3;
+					html += hlSpan('c', escapeHtml(src.slice(i, end)));
+					prevCh = '\n';
+					i = end; continue;
+				}
+				if (cfg.hs && c === '#' && (cfg.hsAny || i === 0 || /\s/.test(src[i - 1]))) {
+					const j = src.indexOf('\n', i);
+					const end = j === -1 ? n : j;
+					html += hlSpan('c', escapeHtml(src.slice(i, end)));
+					prevCh = '\n';
+					i = end; continue;
+				}
+				if (cfg.pr && c === '#') {
+					let k = i - 1;
+					while (k >= 0 && (src[k] === ' ' || src[k] === '\t')) k--;
+					if (k < 0 || src[k] === '\n') {
+						const j = src.indexOf('\n', i);
+						const end = j === -1 ? n : j;
+						html += hlSpan('d', escapeHtml(src.slice(i, end)));
+						prevCh = '\n';
+						i = end; continue;
+					}
+				}
+				if (cfg.tr && (src.slice(i, i + 3) === '"""' || src.slice(i, i + 3) === "'''")) {
+					multi = { cls: 's', close: src.slice(i, i + 3), openLen: 3 };
+					i += 3; continue;
+				}
+				if (cfg.de && c === '@') {
+					const dm = /^@[A-Za-z_][\w$]*/.exec(src.slice(i));
+					if (dm) { html += hlSpan('b', escapeHtml(dm[0])); prevCh = dm[0][dm[0].length - 1]; i += dm[0].length; continue }
+				}
+				if (cfg.dl && c === '$') {
+					const dm = /^\$[A-Za-z_][\w]*/.exec(src.slice(i));
+					if (dm) { html += hlSpan('b', escapeHtml(dm[0])); prevCh = dm[0][dm[0].length - 1]; i += dm[0].length; continue }
+				}
+				if (c === '"' || c === "'") {
+					let j = i + 1;
+					let esc = false;
+					while (j < n) {
+						if (!esc && src[j] === c) break;
+						if (!esc && src[j] === '\\') esc = true; else esc = false;
+						if (src[j] === '\n') break;
+						j++;
+					}
+					const end = j < n && src[j] === c ? j + 1 : j;
+					let cls = 's';
+					if (cfg.ks) {
+						let k = end;
+						while (k < n && (src[k] === ' ' || src[k] === '\t')) k++;
+						if (src[k] === ':') cls = 'p';
+					}
+					html += hlSpan(cls, escapeHtml(src.slice(i, end)));
+					prevCh = src[end - 1];
+					i = end; continue;
+				}
+				if (cfg.bt && c === '`') {
+					multi = { cls: 's', close: '`', openLen: 1 };
+					i += 1; continue;
+				}
+				const nm = /^(0[xX][0-9a-fA-F]+|0[bB][01]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+)/.exec(src.slice(i));
+				if (nm) {
+					html += hlSpan('n', escapeHtml(nm[0]));
+					prevCh = nm[0][nm[0].length - 1];
+					i += nm[0].length; continue;
+				}
+				const idm = /^[A-Za-z_$][\w$]*/.exec(src.slice(i));
+				if (idm) {
+					const word = idm[0];
+					let k2 = i + word.length;
+					while (k2 < n && (src[k2] === ' ' || src[k2] === '\t')) k2++;
+					const nextCh = src[i + word.length];
+					let cls = '';
+					if (sets.kw.has(word)) cls = 'k';
+					else if (sets.bn.has(word)) cls = 'b';
+					else if (sets.ty.has(word)) cls = 't';
+					else if (cfg.ct && /^[A-Z]/.test(word)) cls = 't';
+					else if (nextCh === '(') cls = 'f';
+					else if (prevCh === '.') cls = 'p';
+					else if (cfg.ki && src[k2] === ':') cls = 'p';
+					else if (cfg.ke && src[k2] === '=' && src[k2 + 1] !== '=') cls = 'p';
+					html += cls ? hlSpan(cls, escapeHtml(word)) : escapeHtml(word);
+					prevCh = word[word.length - 1];
+					i += word.length; continue;
+				}
+				if (cfg.tg && c === '<') {
+					const gt = src.indexOf('>', i);
+					const end = gt === -1 ? n : gt + 1;
+					const seg = src.slice(i, end);
+					let segHtml = '';
+					let last = 0;
+					let m;
+					const tagRe = /(<\/?)([A-Za-z][\w-]*)|([A-Za-z-]+)(?=\s*=)|(\/?>)|("[^"]*"|'[^']*')/g;
+					tagRe.lastIndex = 0;
+					while ((m = tagRe.exec(seg)) !== null) {
+						segHtml += escapeHtml(seg.slice(last, m.index));
+						if (m[1]) segHtml += m[1] + hlSpan('t', escapeHtml(m[2]));
+						else if (m[3]) segHtml += hlSpan('a', escapeHtml(m[3]));
+						else if (m[4]) segHtml += escapeHtml(m[4]);
+						else if (m[5]) segHtml += hlSpan('s', escapeHtml(m[5]));
+						last = m.index + m[0].length;
+					}
+					segHtml += escapeHtml(seg.slice(last));
+					html += segHtml;
+					prevCh = seg[seg.length - 1] || '';
+					i = end; continue;
+				}
+				const om = HL_OP_RE.exec(src.slice(i));
+				if (om) {
+					html += hlSpan('o', escapeHtml(om[0]));
+					prevCh = om[0][om[0].length - 1];
+					i += om[0].length; continue;
+				}
+				prevCh = c;
+				html += escapeHtml(c);
+				i++;
+			}
+			return html;
+		};
+		// 高亮 HTML 按行切分:逐行补齐跨行 span 的闭合与重开,
+		// 保证多行注释/字符串的颜色连续,且每一行都是独立可渲染片段
+		const splitHighlighted = (html) => {
+			const out = [];
+			const stack = [];
+			const tagRe = /<\/?span( class="[^"]*")?>/g;
+			for (const raw of html.split('\n')) {
+				// 行首栈 → 前缀重开跨行 span
+				const startStack = stack.slice();
+				let prefix = '';
+				for (const cls of startStack) prefix += '<span class="' + cls + '">';
+				// 按顺序处理本行标签,更新栈
+				tagRe.lastIndex = 0;
+				let m;
+				while ((m = tagRe.exec(raw)) !== null) {
+					const t = m[0];
+					if (t.startsWith('</')) stack.pop();
+					else {
+						const cm = /class="([^"]*)"/.exec(t);
+						stack.push(cm ? cm[1] : '');
+					}
+				}
+				// 行尾栈 → 后缀闭合,保证每行独立平衡
+				let suffix = '';
+				for (let i = stack.length - 1; i >= 0; i--) suffix += '</span>';
+				out.push(prefix + raw + suffix);
+			}
+			return out;
+		};
+
 		// ---------- icons ----------
 		const iconPaths = {
 			chevronDown: 'M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z',
 			chevronRight: 'M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
 			close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
 			refresh: 'M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+			sparkle: 'M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z',
+			reset: 'M12 5V2L7 6l5 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-6 8c0-1.65.62-3.16 1.63-4.29L6.22 7.3C4.85 8.74 4 10.76 4 13c0 4.08 3.05 7.44 7 7.93v-2.02C8.17 18.43 6 15.97 6 13z',
+			copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
+			check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
 			file: 'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z',
 			folder: 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
 			book: 'M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z',
@@ -560,6 +875,15 @@ html[data-cg-panel-open] [data-phase=active] {
 			const flashTimerRef = react.useRef(null);
 			// 解读项闪烁定时器(点击代码行时)
 			const itemFlashTimerRef = react.useRef(null);
+			// 跳转目标行闪烁: { line, seq }(Ctrl+点击跳转 / 历史导航)
+			const [jumpLine, setJumpLine] = react.useState(null);
+			const jumpLineTimerRef = react.useRef(null);
+			// 跳转历史:所有跳转入栈,Alt+←/→ 前进后退
+			const jumpHistoryRef = react.useRef([]);
+			const jumpIndexRef = react.useRef(-1);
+			// 最近交互行:跳转的"出发点"取用户最后点击/停留的那一行,
+			// 而不是滚动位置折算的顶部行(否则 Alt+← 闪烁落在错行)
+			const lastFocusRef = react.useRef(null);
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
@@ -595,12 +919,43 @@ html[data-cg-panel-open] [data-phase=active] {
 			}, [s.open]);
 			react.useEffect(() => {
 				const root = document.documentElement;
-				root.style.setProperty('--cg-width', s.width + 'px');
+				// 内容避让量跟随面板实际显示宽度(窗口变小时不会多让)
+				root.style.setProperty('--cg-width', Math.min(s.width, panelMaxW()) + 'px');
 			}, [s.width]);
+			// 窗口变窄时把面板宽度收回上限内,避免面板超出屏幕
+			react.useEffect(() => {
+				const onWin = () => {
+					const maxW = panelMaxW();
+					if (store.width > maxW) { store.width = maxW; emit(); }
+				};
+				window.addEventListener('resize', onWin);
+				return () => window.removeEventListener('resize', onWin);
+			}, []);
 			react.useEffect(() => () => {
 				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
 				if (itemFlashTimerRef.current !== null) clearTimeout(itemFlashTimerRef.current);
+				if (jumpLineTimerRef.current !== null) clearTimeout(jumpLineTimerRef.current);
 			}, []);
+			// Alt+←/→:跳转历史前进/后退(面板打开期间接管浏览器前进后退)
+			react.useEffect(() => {
+				const onKey = (e) => {
+					if (!s.open) return;
+					if (!e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+					e.preventDefault();
+					const arr = jumpHistoryRef.current;
+					if (arr.length === 0) return;
+					let idx = jumpIndexRef.current;
+					if (e.key === 'ArrowLeft') idx = Math.max(0, idx - 1);
+					else idx = Math.min(arr.length - 1, idx + 1);
+					if (idx === jumpIndexRef.current) return;
+					jumpIndexRef.current = idx;
+					lastFocusRef.current = arr[idx];
+					jumpToLine(arr[idx]);
+					flashJumpLine(arr[idx]);
+				};
+				window.addEventListener('keydown', onKey, true);
+				return () => window.removeEventListener('keydown', onKey, true);
+			}, [s.open]);
 
 			const loadChildren = (path) => {
 				api.list(path).then((res) => {
@@ -644,11 +999,17 @@ html[data-cg-panel-open] [data-phase=active] {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				setActive(null);
 				setFlash(null);
+				setJumpLine(null);
 				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
 				if (itemFlashTimerRef.current !== null) { clearTimeout(itemFlashTimerRef.current); itemFlashTimerRef.current = null }
+				if (jumpLineTimerRef.current !== null) { clearTimeout(jumpLineTimerRef.current); jumpLineTimerRef.current = null }
+				// 切换文件后,旧文件的跳转历史不再有意义
+				jumpHistoryRef.current = [];
+				jumpIndexRef.current = -1;
+				lastFocusRef.current = null;
 				cardRefs.current = [];
-				setFile({ path: entry.path, name: entry.name, reading: true, explaining: true });
-				// 源码与解读完全独立:源码直接读文件、立刻显示;解读异步生成
+				setFile({ path: entry.path, name: entry.name, reading: true, explaining: false });
+				// 点击文件只读源码、立刻显示;解读由用户点 ✨ 图标才触发
 				api.read(entry.path).then((res) => {
 					setFile((f) => {
 						if (!f || f.path !== entry.path) return f;
@@ -659,12 +1020,31 @@ html[data-cg-panel-open] [data-phase=active] {
 				}).catch((err) => {
 					setFile((f) => f && f.path === entry.path ? { ...f, reading: false, error: String((err && err.message) || err) } : f);
 				});
-				api.explain(entry.path, false).then((res) => applyExplainResult(entry.path, res)).catch((err) => failExplain(entry.path, err));
 			};
 
+			// ✨ 按钮开关:无解读 → 展开板块并生成;已有解读 → 收起板块(数据保留,再点秒开)
+			const toggleExplain = () => {
+				if (!file || file.reading || file.error || file.tooLarge) return;
+				if (file.guideOn) {
+					setFile((f) => ({ ...f, guideOn: false }));
+					return;
+				}
+				if (file.explaining) {
+					// 生成仍在进行:只展开板块等结果,不重复请求
+					setFile((f) => ({ ...f, guideOn: true }));
+					return;
+				}
+				if (Array.isArray(file.functions)) {
+					// 已有解读结果:直接展开,不重新请求
+					setFile((f) => ({ ...f, guideOn: true }));
+					return;
+				}
+				setFile((f) => ({ ...f, guideOn: true, explaining: true, explainError: null, warnings: [] }));
+				api.explain(file.path, false).then((res) => applyExplainResult(file.path, res)).catch((err) => failExplain(file.path, err));
+			};
 			const reExplain = () => {
 				if (!file || file.explaining) return;
-				setFile((f) => ({ ...f, explaining: true, explainError: null, warnings: [] }));
+				setFile((f) => ({ ...f, guideOn: true, explaining: true, explainError: null, warnings: [] }));
 				api.explain(file.path, true).then((res) => applyExplainResult(file.path, res)).catch((err) => failExplain(file.path, err));
 			};
 
@@ -682,14 +1062,65 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!pane) return;
 				const lines = pane.querySelectorAll('.cg-line');
 				const el = lines[Math.min(Math.max(start - 1, 0), lines.length - 1)];
-				if (el) pane.scrollTo({ top: el.offsetTop - pane.clientHeight * 0.2 });
+				if (!el) return;
+				// 用目标行相对滚动容器视口的坐标差计算,避免 offsetTop 相对
+				// 定位祖先(fixed 面板)多算头部高度导致的滚动偏移
+				const delta = el.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+				pane.scrollTo({ top: pane.scrollTop + delta - pane.clientHeight * 0.2 });
+			};
+
+			// 目标行闪烁 1.5s(跳转定位反馈)
+			const flashJumpLine = (line) => {
+				const seq = Date.now();
+				setJumpLine({ line, seq });
+				if (jumpLineTimerRef.current !== null) clearTimeout(jumpLineTimerRef.current);
+				jumpLineTimerRef.current = setTimeout(() => {
+					jumpLineTimerRef.current = null;
+					setJumpLine((j) => (j && j.seq === seq ? null : j));
+				}, 1500);
+			};
+			// 当前滚动位置折算行号(动态取实际行高,字号调整后依然准确)
+			const currentLineOf = () => {
+				const pane = codePaneRef.current;
+				if (!pane) return 1;
+				const el = pane.querySelector('.cg-line');
+				const lineH = el ? (el.getBoundingClientRect().height || 21) : 21;
+				return Math.max(1, Math.round(pane.scrollTop / lineH) + 1);
+			};
+			// 所有跳转统一入口:记录出发点+落点入历史栈 → 滚动定位 → 目标行闪烁。
+			// 出发点优先取"最近交互行"(用户实际点击的那行),没有才用滚动位置折算
+			const navigateTo = (line, from) => {
+				const arr = jumpHistoryRef.current;
+				const idx = jumpIndexRef.current;
+				const origin = from !== undefined && from !== null ? from : (lastFocusRef.current !== null ? lastFocusRef.current : currentLineOf());
+				arr.length = idx + 1; // 截断"前进"分支
+				if (arr[arr.length - 1] !== origin) arr.push(origin);
+				if (arr[arr.length - 1] !== line) arr.push(line);
+				jumpIndexRef.current = arr.length - 1;
+				lastFocusRef.current = line;
+				jumpToLine(line);
+				flashJumpLine(line);
+			};
+			// Ctrl+点击标识符 → 跳转到其定义:优先用已解析的函数表(签名已校正),
+			// 否则正则回退 def/class/function/const 等定义行
+			const jumpToDef = (name, fromLine) => {
+				if (!file || !file.content) return;
+				const fns = file.functions || [];
+				const hit = fns.find((f) => f.name === name || String(f.name).split('.').pop() === name);
+				if (hit) { navigateTo(hit.start, fromLine); return }
+				const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+				const defRe = new RegExp('(?:^|\\s)(?:def|class)\\s+' + esc + '\\b|(?:^|\\s)' + esc + '\\s*=|(?:^|\\s)(?:function|const|let|var)\\s+' + esc + '\\b');
+				const lines = String(file.content).replace(/\r\n/g, '\n').split('\n');
+				for (let i = 0; i < lines.length; i++) {
+					if (defRe.test(lines[i])) { navigateTo(i + 1, fromLine); return }
+				}
 			};
 
 			const onCardClick = (i, e) => {
 				// 点击的是变量名时,交给变量定位逻辑,不重复跳转函数
 				if (e.target.closest('.cg-var')) return;
 				setActive(i);
-				if (file && file.functions && file.functions[i]) jumpToLine(file.functions[i].start);
+				if (file && file.functions && file.functions[i]) navigateTo(file.functions[i].start);
 			};
 
 			// 多级回退搜索变量出现行:函数范围内精确匹配 → 函数范围内首标识符 →
@@ -727,7 +1158,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const seq = Date.now();
 				setActive(idx);
 				setFlash({ name, funcIndex: idx, seq });
-				if (hitLine > 0) jumpToLine(hitLine);
+				if (hitLine > 0) navigateTo(hitLine);
 				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
 				flashTimerRef.current = setTimeout(() => {
 					flashTimerRef.current = null;
@@ -792,7 +1223,45 @@ html[data-cg-panel-open] [data-phase=active] {
 				}, 1500);
 			};
 
-			const onLineClick = (lineNo) => {
+			// 等宽字体字符宽度(把点击横坐标折算成行内字符偏移)
+			let charWidthCache = null;
+			const charWidth = () => {
+				if (charWidthCache === null) {
+					const ctx = document.createElement('canvas').getContext('2d');
+					ctx.font = '14px ui-monospace, SFMono-Regular, Consolas, monospace';
+					charWidthCache = ctx.measureText('M').width || 8.4;
+				}
+				return charWidthCache;
+			};
+			// 行号栏到代码文本起点的实际距离:动态测量(行号栏 sticky 不随横向
+			// 滚动,代码文本随滚动偏移,两者差值恒定,且不随字号/栏宽调整失效)
+			const gutterOf = (pane) => {
+				const line = pane.querySelector('.cg-line');
+				const text = line ? line.querySelector('.cg-code-text') : null;
+				if (line && text) return text.getBoundingClientRect().left - line.getBoundingClientRect().left;
+				return 63;
+			};
+			const wordAtCol = (text, col) => {
+				const re = /[A-Za-z_$][\w$]*/g;
+				let m;
+				while ((m = re.exec(text)) !== null) {
+					if (col >= m.index && col <= m.index + m[0].length) return m[0];
+				}
+				return null;
+			};
+			const onLineClick = (lineNo, e) => {
+				lastFocusRef.current = lineNo;
+				// Ctrl/⌘+点击:跳转到所点标识符的定义处
+				if (e && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+					const pane = codePaneRef.current;
+					if (pane) {
+						const rect = pane.getBoundingClientRect();
+						const col = Math.floor((e.clientX - rect.left + pane.scrollLeft - gutterOf(pane)) / charWidth());
+						const lines = file && file.content ? String(file.content).replace(/\r\n/g, '\n').split('\n') : [];
+						const word = col >= 0 && lines[lineNo - 1] !== undefined ? wordAtCol(lines[lineNo - 1], col) : null;
+						if (word) { jumpToDef(word, lineNo); return }
+					}
+				}
 				const i = lineFuncAt(lineNo);
 				setActive(i);
 				if (i !== null) {
@@ -802,17 +1271,51 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 			};
 
+			// 面板左缘拖动:向左拖变宽(最宽到接近全宽);拖到最右侧阈值以下松手 → 收起面板
 			const onResizeStart = (e) => {
 				e.preventDefault();
-				setDrag({ startX: e.clientX, startWidth: s.width });
+				setDrag({ kind: 'outer', startX: e.clientX, startWidth: s.width });
+			};
+			// 分栏线拖动:记录起点与当时各窗像素宽度,移动时折算回比例存 store
+			const onDividerStart = (kind) => (e) => {
+				e.preventDefault();
+				const w = paneWidths(s.width, s.paneR);
+				setDrag({ kind, startX: e.clientX, startPanelW: s.width, startMainW: w.mainW, startCodeW: w.codeW, startTreeW: w.treeW });
 			};
 			const onResizeMove = (e) => {
 				if (!drag) return;
-				// drag the LEFT edge of a RIGHT panel: moving left widens it
-				store.width = Math.max(420, Math.min(1400, drag.startWidth + (drag.startX - e.clientX)));
+				if (drag.kind === 'outer') {
+					// drag the LEFT edge of a RIGHT panel: moving left widens it
+					store.width = Math.max(PANEL_COLLAPSE_W, Math.min(panelMaxW(), drag.startWidth + (drag.startX - e.clientX)));
+				} else if (drag.kind === 'code') {
+					const w = Math.max(PANE_MIN_CODE, Math.min(drag.startCodeW + (e.clientX - drag.startX), drag.startMainW - PANE_MIN_GUIDE));
+					store.paneR = { ...store.paneR, code: w / drag.startMainW };
+				} else if (drag.kind === 'tree') {
+					// 分栏线在文件树左侧:向左拖 → 文件树变宽
+					const w = Math.max(PANE_MIN_TREE, Math.min(drag.startTreeW - (e.clientX - drag.startX), Math.max(PANE_MIN_TREE, drag.startPanelW - (PANE_MIN_CODE + PANE_MIN_GUIDE + PANE_DIV_W))));
+					store.paneR = { ...store.paneR, tree: w / drag.startPanelW };
+				}
 				emit();
 			};
-			const endDrag = () => setDrag(null);
+			const endDrag = () => {
+				if (drag) {
+					if (drag.kind === 'outer') {
+						if (store.width <= PANEL_COLLAPSE_W) {
+							// 拖到最右侧 → 收起面板,并保留收起前的宽度供下次打开
+							setOpen(false);
+							store.width = drag.startWidth;
+						} else {
+							store.width = Math.max(PANEL_MIN_W, store.width);
+						}
+					}
+					try {
+						localStorage.setItem('cg-panel-w', String(store.width));
+						localStorage.setItem('cg-code-r', String(store.paneR.code));
+						localStorage.setItem('cg-tree-r', String(store.paneR.tree));
+					} catch (_) { /* 忽略存储失败 */ }
+				}
+				setDrag(null);
+			};
 
 			const renderTree = () => {
 				if (!tree || !tree.rootPath) return react.createElement('div', { className: 'cg-empty' }, '未找到工作区');
@@ -840,43 +1343,43 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			const renderCode = () => {
-				if (!file) return react.createElement('div', { className: 'cg-empty' }, '在左侧选择要陪读的代码文件');
+				if (!file) return react.createElement('div', { className: 'cg-empty' }, '在最右侧文件栏选择要陪读的代码文件');
 				if (file.reading) return react.createElement('div', { className: 'cg-empty' }, '源码读取中…');
 				if (file.error) return react.createElement('div', { className: 'cg-error' }, '源码读取失败：\n' + file.error);
 				if (file.tooLarge) return react.createElement('div', { className: 'cg-empty' }, '文件过大（' + (file.size || 0) + ' 字节），暂不支持陪读');
 				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
 				const truncated = lines.length > MAX_LINES;
 				const shown = lines.slice(0, MAX_LINES);
+				// 变量闪烁:先用占位符把目标区间内的出现处包住,高亮完成后再替换为
+				// <mark>,避免正则直接作用于 HTML(会误伤 class 属性里的片段)
 				const flashFn = flash && file && file.functions ? file.functions[flash.funcIndex] : null;
-				const flashRe = flashFn ? new RegExp('(?<![A-Za-z0-9_$])' + flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])', 'g') : null;
+				let markedLines = shown;
+				if (flashFn && flash && flash.name) {
+					const escName = flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+					const re = new RegExp('(?<![A-Za-z0-9_$])(' + escName + ')(?![A-Za-z0-9_$])', 'g');
+					markedLines = shown.map((line, idx) => {
+						const lineNo = idx + 1;
+						return (lineNo >= flashFn.start && lineNo <= flashFn.end) ? line.replace(re, '\u0001$1\u0002') : line;
+					});
+				}
+				// 语法高亮:整段一次高亮(保证跨行注释/字符串颜色连续),再按行切分补齐 span
+				const lang = file && file.name ? hlLangFor(file.name) : '';
+				const html = lang && lang !== 'markdown' && lang !== 'text' ? highlight(markedLines.join('\n'), lang) : escapeHtml(markedLines.join('\n'));
+				const lineHtmls = splitHighlighted(html).slice(0, MAX_LINES);
 				const els = [];
-				for (let i = 0; i < shown.length; i++) {
+				for (let i = 0; i < lineHtmls.length; i++) {
 					const lineNo = i + 1;
 					const fi = lineFuncAt(lineNo);
-					const inFlash = flashRe !== null && flashFn !== null && lineNo >= flashFn.start && lineNo <= flashFn.end;
-					let codeEl;
-					if (inFlash) {
-						const parts = [];
-						let last = 0;
-						let m;
-						let k = 0;
-						while ((m = flashRe.exec(shown[i])) !== null) {
-							if (m.index > last) parts.push(shown[i].slice(last, m.index));
-							parts.push(react.createElement('mark', { key: 'm' + k++, className: 'cg-var-hit' }, m[0]));
-							last = m.index + m[0].length;
-						}
-						parts.push(shown[i].slice(last));
-						codeEl = react.createElement('span', { className: 'cg-code-text' }, ...parts);
-					} else {
-						codeEl = react.createElement('span', { className: 'cg-code-text' }, shown[i]);
-					}
 					els.push(react.createElement('div', {
 						key: lineNo,
-						className: 'cg-line' + (active !== null && fi === active ? ' cg-line-hi' : ''),
-						onClick: () => onLineClick(lineNo),
+						className: 'cg-line' + (active !== null && fi === active ? ' cg-line-hi' : '') + (jumpLine && jumpLine.line === lineNo ? ' cg-line-jump' : ''),
+						onClick: (e) => onLineClick(lineNo, e),
 					},
 						react.createElement('span', { className: 'cg-ln' }, lineNo),
-						codeEl,
+						react.createElement('span', {
+							className: 'cg-code-text cg-hl',
+							dangerouslySetInnerHTML: { __html: lineHtmls[i].replace(/\u0001/g, '<mark class="cg-var-hit">').replace(/\u0002/g, '</mark>') },
+						}),
 					));
 				}
 				return react.createElement('div', { className: 'cg-code', ref: codePaneRef }, els, truncated ? react.createElement('div', { className: 'cg-empty' }, '文件较长，仅显示前 ' + MAX_LINES + ' 行') : null);
@@ -896,7 +1399,6 @@ html[data-cg-panel-open] [data-phase=active] {
 					);
 				}
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef, onClick: onGuideClick },
-					react.createElement('div', { className: 'cg-empty', style: { padding: '4px 2px 8px' } }, '看代码 → 点代码行 → 对应解读项闪烁；点卡片/变量名反向定位'),
 					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
 					fns.map((f, i) => {
 						const steps = stepsOf(f);
@@ -943,7 +1445,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const i = file.functions.findIndex((f) => compact(f.name) === needle);
 				if (i < 0) return;
 				setActive(i);
-				jumpToLine(file.functions[i].start);
+				navigateTo(file.functions[i].start);
 			};
 
 			const renderCallGraph = () => {
@@ -954,43 +1456,59 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			if (!s.open) return null;
+			// 拖动中且已过收起阈值:高亮收起把手,提示"松手收起"
+			const collapsing = !!drag && drag.kind === 'outer' && s.width <= PANEL_COLLAPSE_W;
 			const collapseTab = react.createElement('button', {
-				className: 'cg-collapse-tab',
-				title: '收起代码陪读',
+				className: 'cg-collapse-tab' + (collapsing ? ' cg-collapse-tab-on' : ''),
+				title: collapsing ? '松开收起' : '收起代码陪读',
 				'aria-label': '收起代码陪读',
 				onClick: () => setOpen(false),
 			}, react.createElement(Icon, { name: 'chevronRight', size: 14 }));
-			const panel = react.createElement('div', { className: 'cg-panel', style: { width: s.width + 'px' } },
-				react.createElement('div', { className: 'cg-resize', title: '拖动调整宽度', onPointerDown: onResizeStart }),
+			const widths = paneWidths(Math.min(s.width, panelMaxW()), s.paneR);
+			const panel = react.createElement('div', { className: 'cg-panel', style: { width: Math.min(s.width, panelMaxW()) + 'px' } },
+				react.createElement('div', { className: 'cg-resize', title: '拖动调整宽度 · 拖到最右侧收起', onPointerDown: onResizeStart }),
 				collapseTab,
 				react.createElement('div', { className: 'cg-header' },
 					react.createElement('span', { className: 'cg-title' }, '代码陪读'),
-					file && !file.explaining && !file.error && !file.tooLarge ? react.createElement('button', { className: 'cg-iconbtn', title: '重新解读', onClick: reExplain }, react.createElement(Icon, { name: 'refresh', size: 14 })) : null,
+					file && file.guideOn && !file.explaining && !file.error && !file.tooLarge ? react.createElement('button', { className: 'cg-iconbtn', title: '重新解读', onClick: reExplain }, react.createElement(Icon, { name: 'refresh', size: 14 })) : null,
 					react.createElement('button', { className: 'cg-iconbtn', title: '关闭', onClick: () => setOpen(false) }, react.createElement(Icon, { name: 'close', size: 14 })),
 				),
 				react.createElement('div', { className: 'cg-body' },
-					react.createElement('div', { className: 'cg-tree' }, renderTree()),
 					react.createElement('div', { className: 'cg-main' },
 						react.createElement('div', { className: 'cg-split' },
-							react.createElement('div', { className: 'cg-code-pane' },
+							react.createElement('div', { className: 'cg-code-pane', style: file && file.guideOn ? { width: widths.codeW + 'px' } : { flex: '1 1 auto' } },
 								react.createElement('div', { className: 'cg-pane-head' },
 									react.createElement('span', { className: 'cg-pane-title' }, '源码'),
 									react.createElement('span', { className: 'cg-pane-path' }, file ? file.path : ''),
+									file && !file.reading && !file.error && !file.tooLarge
+										? react.createElement('button', {
+											className: 'cg-pane-act' + (file.guideOn ? ' cg-pane-act-on' : ''),
+											title: file.guideOn ? '取消解读' : '解读',
+											onClick: toggleExplain,
+										}, react.createElement(Icon, { name: 'sparkle', size: 13 }))
+										: null,
 								),
 								renderCode(),
 							),
-							react.createElement('div', { className: 'cg-guide-pane' },
+							file && file.guideOn ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'code' ? ' cg-divider-on' : ''), title: '拖动调整源码/解读宽度', onPointerDown: onDividerStart('code') }) : null,
+							file && file.guideOn ? react.createElement('div', { className: 'cg-guide-pane' },
 								react.createElement('div', { className: 'cg-tabs' },
 									react.createElement('button', { className: 'cg-tab' + (tab === 'guide' ? ' cg-tab-on' : ''), onClick: () => setTab('guide') }, '函数解读'),
 									react.createElement('button', { className: 'cg-tab' + (tab === 'graph' ? ' cg-tab-on' : ''), onClick: () => setTab('graph') }, '调用图'),
 								),
 								tab === 'guide' ? renderGuide() : renderCallGraph(),
-							),
+							) : null,
 						),
 						react.createElement('div', { className: 'cg-meta' },
-							file && !file.error ? (file.explaining ? '解读生成中…' : (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : '')) : '就绪',
+							file && !file.error ? (
+								file.explaining ? '解读生成中…' :
+								!file.guideOn ? '源码已加载 · 点 ✨ 开始解读' :
+								(file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : '')
+							) : '就绪',
 						),
 					),
+					react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'tree' ? ' cg-divider-on' : ''), title: '拖动调整文件树宽度', onPointerDown: onDividerStart('tree') }),
+					react.createElement('div', { className: 'cg-tree', style: { width: widths.treeW + 'px' } }, renderTree()),
 				),
 			);
 			return react.createElement('div', { className: 'cg-overlay-root' },
