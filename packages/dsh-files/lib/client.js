@@ -247,7 +247,7 @@ html[data-cg-panel-open] [data-phase=active] {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px; overflow: auto; white-space: pre-wrap;
 }
-/* ---------- 文件树增强(迁移自 file-explorer) ---------- */
+/* ---------- 文件树增强 ---------- */
 .cg-tree { display: flex; flex-direction: column; }
 .cg-tree-scroll { flex: 1; overflow: auto; padding: 2px 0 8px; }
 .cg-searchbar { position: relative; padding: 6px 8px 4px; flex: none; user-select: text; }
@@ -282,7 +282,7 @@ html[data-cg-panel-open] [data-phase=active] {
   font-size: 12px; cursor: pointer;
 }
 .cg-btn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
-/* ---------- Markdown 预览(迁移自 file-explorer, fe-md → cg-md) ---------- */
+/* ---------- Markdown 预览 ---------- */
 .cg-hl { tab-size: 4; }
 .cg-md {
   flex: 1; overflow: auto; padding: 10px 14px;
@@ -433,7 +433,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			}, [props.code]);
 			return react.createElement('div', { className: 'cg-mermaid', ref });
 		};
-		// ---------- markdown 预览(迁移自 file-explorer) ----------
+		// ---------- markdown 预览 ----------
 		const isMarkdown = (name) => /\.(md|markdown|mdown|mkd)$/i.test(name);
 		const isMermaidFile = (name) => /\.(mmd|mermaid)$/i.test(name);
 		// 只有代码类文件才提供 ✨ 函数解读(md/txt/图片等无意义)
@@ -833,12 +833,14 @@ html[data-cg-panel-open] [data-phase=active] {
 		};
 
 		// ---------- shared store ----------
-		// 面板/分栏尺寸存 localStorage:刷新后保持上次布局
-		const DEFAULT_PANEL_W = 560; // 默认宽度:给聊天区多留空间
+		// 分栏尺寸存 localStorage:刷新后保持上次布局。
+		// tree = 文件树宽;code = 源码区总宽(解读打开时 = 源码 + 分栏线 + 解读,
+		// 关闭解读时源码向右扩展收回);guide = 解读宽。
+		// 面板宽 = 可见区域之和:只开树=tree;打开文件=tree+分栏线+code。
+		// 解读在源码区内展开/收起,面板宽度不变。
 		const store = {
 			open: false,
-			width: DEFAULT_PANEL_W,
-			paneR: { code: 0.5, tree: 0.32 }, // 源码占主区比例、文件树占面板比例(默认给足宽度)
+			pane: { tree: 240, code: 485, guide: 240 },
 			query: '',
 			searching: false,
 			searchError: null,
@@ -847,29 +849,12 @@ html[data-cg-panel-open] [data-phase=active] {
 			listeners: new Set(),
 		};
 		try {
-			const w = Number(localStorage.getItem('cg-panel-w'));
-			if (Number.isFinite(w) && w >= 420 && w <= 2400) {
-				// 一次性迁移:默认宽度从 680 收窄到 560,旧的大宽度收回一次,
-				// 之后用户拖出来的宽度照常持久化
-				if (!localStorage.getItem('cg-w-mig-560')) {
-					store.width = Math.min(w, DEFAULT_PANEL_W);
-					localStorage.setItem('cg-w-mig-560', '1');
-				} else {
-					store.width = w;
-				}
-			}
-			const cr = Number(localStorage.getItem('cg-code-r'));
-			if (Number.isFinite(cr) && cr >= 0.05 && cr <= 0.95) store.paneR.code = cr;
-			const tr = Number(localStorage.getItem('cg-tree-r'));
-			if (Number.isFinite(tr) && tr >= 0.02 && tr <= 0.9) {
-				// 一次性迁移:文件树默认占比调大(0.25 → 0.32),旧的窄占比收回一次,
-				// 之后用户拖出来的宽度照常持久化
-				if (!localStorage.getItem('cg-tree-mig-320') && tr < 0.32) {
-					store.paneR.tree = 0.32;
-					localStorage.setItem('cg-tree-mig-320', '1');
-				} else {
-					store.paneR.tree = tr;
-				}
+			const p = JSON.parse(localStorage.getItem('cg-pane') || 'null');
+			if (p && typeof p === 'object'
+				&& Number.isFinite(p.tree) && p.tree >= 240 && p.tree <= 1600
+				&& Number.isFinite(p.code) && p.code >= p.guide + 5 + 240 && p.code <= 2200
+				&& Number.isFinite(p.guide) && p.guide >= 240 && p.guide <= 1200) {
+				store.pane = { tree: p.tree, code: p.code, guide: p.guide };
 			}
 		} catch (_) { /* localStorage 不可用时忽略 */ }
 		const emit = () => { for (const fn of Array.from(store.listeners)) fn() };
@@ -911,22 +896,28 @@ html[data-cg-panel-open] [data-phase=active] {
 		const setQuery = (value) => { store.query = String(value || ''); emit(); runSearch(store.query) };
 
 		// ---------- 面板/分栏尺寸 ----------
-		// 面板最小宽度 = 窗口宽度的 1/3(下限 420):整体视图拖到最右侧也不
-		// 能比这更窄,杜绝三视窗挤压重叠
-		const panelMinW = () => Math.max(420, Math.round(window.innerWidth / 3));
-		const panelMaxW = () => Math.max(panelMinW(), Math.min(window.innerWidth - 90, 2200));
 		const PANE_DIV_W = 5;
-		// 三视窗最小阈值:面板最小宽度等分三份(扣除两条分栏线)
-		const paneMinOf = () => Math.max(100, Math.floor((panelMinW() - 2 * PANE_DIV_W) / 3));
-		// 由面板宽度 + 两个比例算出三个视窗的实际像素宽度:拖分栏线时实时
-		// 生效,整体调宽时按比例同步伸缩(和 VS Code/Cursor 侧栏行为一致)
-		const paneWidths = (panelW, paneR) => {
-			const minP = paneMinOf();
-			const treeW = Math.max(minP, Math.min(Math.round(panelW * paneR.tree), Math.max(minP, panelW - (minP * 2 + PANE_DIV_W))));
-			const mainW = panelW - treeW - PANE_DIV_W;
-			const codeW = Math.max(minP, Math.min(Math.round(mainW * paneR.code), mainW - minP));
-			return { treeW, mainW, codeW };
+		const PANE_MIN_PX = 240; // 三个视窗的最小宽统一 240
+		// 面板总宽:只开树 = 树宽;打开文件 = 树 + 分栏线 + 源码区(code)。
+		// 解读开/关只影响源码区内部怎么分,面板宽度不变
+		const panelWidthOf = (pane, showCode) => showCode
+			? pane.tree + PANE_DIV_W + pane.code
+			: pane.tree;
+		// 源码区有效宽的下限:打开文件时面板最少占视窗 1/3;
+		// 解读打开时还要留出 解读+分栏线+240
+		const codeFloorFor = (pane, showGuide) => {
+			const guideMin = showGuide ? pane.guide + PANE_DIV_W + PANE_MIN_PX : PANE_MIN_PX;
+			const thirdMin = Math.max(0, Math.round(window.innerWidth / 3) - pane.tree - PANE_DIV_W);
+			return Math.max(guideMin, thirdMin);
 		};
+		// 上限:面板不超出屏幕(留 90px 余量)
+		const codeCeilFor = (pane) => Math.max(0, window.innerWidth - 90 - pane.tree - PANE_DIV_W);
+		// 源码区有效宽:钳制到 [下限, 上限]
+		const effCodeOf = (pane, showGuide) => Math.min(Math.max(pane.code, codeFloorFor(pane, showGuide)), codeCeilFor(pane));
+		// 源码可见宽:解读打开时从源码区划出 解读+分栏线,关闭时源码收回
+		const sourceWidthOf = (pane, showGuide) => showGuide
+			? Math.max(PANE_MIN_PX, effCodeOf(pane, showGuide) - pane.guide - PANE_DIV_W)
+			: effCodeOf(pane, false);
 
 		// ---------- syntax highlighting (self-contained, no runtime deps) ----------
 		// Extension -> language id for source rendering.
@@ -955,7 +946,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const ext = i >= 0 ? n.slice(i + 1) : n;
 			return HL_EXT[ext] || '';
 		};
-		// Markdown 代码围栏 ```lang 的语言别名(迁移自 file-explorer)
+		// Markdown 代码围栏 ```lang 的语言别名
 		const HL_ALIAS = {
 			javascript: 'js', jsx: 'js', typescript: 'ts', tsx: 'ts',
 			py: 'python', 'c++': 'cpp', sh: 'shell', bash: 'shell',
@@ -1402,6 +1393,8 @@ html[data-cg-panel-open] [data-phase=active] {
 			const [active, setActive] = react.useState(null); // function index
 			const [tab, setTab] = react.useState('guide');
 			const [drag, setDrag] = react.useState(null);
+			// 窗口尺寸变化计数:驱动重渲染,让"面板≥视窗1/3"等约束实时重算
+			const [winTick, setWinTick] = react.useState(0);
 			// 变量闪烁: { name, funcIndex, seq }
 			const [flash, setFlash] = react.useState(null);
 			const flashTimerRef = react.useRef(null);
@@ -1512,15 +1505,15 @@ html[data-cg-panel-open] [data-phase=active] {
 			}, [s.open]);
 			react.useEffect(() => {
 				const root = document.documentElement;
-				// 内容避让量跟随面板实际显示宽度(窗口变小时不会多让)
-				root.style.setProperty('--cg-width', Math.max(panelMinW(), Math.min(s.width, panelMaxW())) + 'px');
-			}, [s.width]);
-			// 窗口变化时把面板宽度收进 [最小(1/3 屏宽), 最大] 区间
+				// 内容避让量 = 面板实际显示宽度(只开树时只有树宽;
+				// 打开文件时钳到 [视窗1/3 下限, 屏幕-90 上限])
+				const showGuide = !!(file && file.guideOn);
+				const eff = { ...s.pane, code: effCodeOf(s.pane, showGuide) };
+				root.style.setProperty('--cg-width', panelWidthOf(eff, !!file) + 'px');
+			}, [s.pane, file && file.path, file && file.guideOn, winTick]);
+			// 窗口尺寸变化:驱动重渲染,让 1/3 下限与屏幕上限实时生效
 			react.useEffect(() => {
-				const onWin = () => {
-					const w = Math.max(panelMinW(), Math.min(panelMaxW(), store.width));
-					if (w !== store.width) { store.width = w; emit(); }
-				};
+				const onWin = () => setWinTick((t) => t + 1);
 				window.addEventListener('resize', onWin);
 				return () => window.removeEventListener('resize', onWin);
 			}, []);
@@ -1979,42 +1972,68 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 			};
 
-			// 面板左缘拖动:向左拖变宽(最宽到接近全宽);拖到最右侧阈值以下松手 → 收起面板
+			// 面板左缘拖动:只开树时调树宽;打开文件后调"源码区"总宽——
+			// 解读开着时,源码与解读按现有比例一起增宽,文件树不动(树单独手动调)
 			const onResizeStart = (e) => {
 				e.preventDefault();
-				setDrag({ kind: 'outer', startX: e.clientX, startWidth: s.width });
+				const target = file ? 'code' : 'tree';
+				setDrag({
+					kind: 'outer',
+					target,
+					startX: e.clientX,
+					startW: target === 'code' ? effCodeOf(s.pane, !!(file && file.guideOn)) : s.pane.tree,
+					startCodeW: effCodeOf(s.pane, !!(file && file.guideOn)),
+					startGuideW: s.pane.guide,
+				});
 			};
-			// 分栏线拖动:记录起点与当时各窗像素宽度,移动时折算回比例存 store
+			// 分栏线拖动:记录起点宽度(源码|解读分栏线以"有效源码区宽"为基准)
 			const onDividerStart = (kind) => (e) => {
 				e.preventDefault();
-				const w = paneWidths(s.width, s.paneR);
-				setDrag({ kind, startX: e.clientX, startPanelW: s.width, startMainW: w.mainW, startCodeW: w.codeW, startTreeW: w.treeW });
+				setDrag({
+					kind,
+					startX: e.clientX,
+					startCodeW: effCodeOf(s.pane, true),
+					startTreeW: s.pane.tree,
+					startSourceW: sourceWidthOf(s.pane, true),
+				});
 			};
+			// 拖动中的最大宽度:与 git 版本一致,可拖到接近全宽(留 90px 余量)
+			const dragMaxOf = (others) => Math.max(PANE_MIN_PX, window.innerWidth - 90 - others);
 			const onResizeMove = (e) => {
 				if (!drag) return;
+				const dx = e.clientX - drag.startX;
 				if (drag.kind === 'outer') {
-					// drag the LEFT edge of a RIGHT panel: moving left widens it;
-					// 最小收到窗口宽度的 1/3,不再允许继续往右挤压三视窗
-					store.width = Math.max(panelMinW(), Math.min(panelMaxW(), drag.startWidth + (drag.startX - e.clientX)));
+					if (drag.target === 'tree') {
+						const w = Math.max(PANE_MIN_PX, Math.min(dragMaxOf(file ? effCodeOf(s.pane, false) + PANE_DIV_W : 0), drag.startW - dx));
+						store.pane = { ...store.pane, tree: w };
+					} else {
+						// 源码区下限:打开文件时面板最少占视窗 1/3(解读开着还要留解读位)
+						const min = codeFloorFor(s.pane, !!(file && file.guideOn));
+						const w = Math.max(min, Math.min(dragMaxOf(s.pane.tree + PANE_DIV_W), drag.startW - dx));
+						if (file && file.guideOn) {
+							// 源码与解读按拖动前的比例一起增宽
+							const ratio = drag.startGuideW / Math.max(1, drag.startCodeW);
+							const guideW = Math.max(PANE_MIN_PX, Math.min(Math.round(w * ratio), w - PANE_DIV_W - PANE_MIN_PX));
+							store.pane = { ...store.pane, code: w, guide: guideW };
+						} else {
+							store.pane = { ...store.pane, code: w };
+						}
+					}
 				} else if (drag.kind === 'code') {
-					const w = Math.max(paneMinOf(), Math.min(drag.startCodeW + (e.clientX - drag.startX), drag.startMainW - paneMinOf()));
-					store.paneR = { ...store.paneR, code: w / drag.startMainW };
+					// 源码|解读分栏线:源码区总宽不变,只重新划分两者
+					const sourceW = Math.max(PANE_MIN_PX, Math.min(drag.startCodeW - PANE_DIV_W - PANE_MIN_PX, drag.startSourceW + dx));
+					store.pane = { ...store.pane, guide: drag.startCodeW - PANE_DIV_W - sourceW };
 				} else if (drag.kind === 'tree') {
-					// 分栏线在文件树左侧:向左拖 → 文件树变宽
-					const w = Math.max(paneMinOf(), Math.min(drag.startTreeW - (e.clientX - drag.startX), Math.max(paneMinOf(), drag.startPanelW - (paneMinOf() * 2 + PANE_DIV_W))));
-					store.paneR = { ...store.paneR, tree: w / drag.startPanelW };
+					// 文件树左侧分栏线:向左拖 → 文件树变宽(面板随之变宽)
+					const w = Math.max(PANE_MIN_PX, Math.min(dragMaxOf(effCodeOf(s.pane, false) + PANE_DIV_W), drag.startTreeW - dx));
+					store.pane = { ...store.pane, tree: w };
 				}
 				emit();
 			};
 			const endDrag = () => {
 				if (drag) {
-					if (drag.kind === 'outer') {
-						store.width = Math.max(panelMinW(), store.width);
-					}
 					try {
-						localStorage.setItem('cg-panel-w', String(store.width));
-						localStorage.setItem('cg-code-r', String(store.paneR.code));
-						localStorage.setItem('cg-tree-r', String(store.paneR.tree));
+						localStorage.setItem('cg-pane', JSON.stringify(store.pane));
 					} catch (_) { /* 忽略存储失败 */ }
 				}
 				setDrag(null);
@@ -2072,7 +2091,6 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			const renderCode = () => {
-				if (!file) return react.createElement('div', { className: 'cg-empty' }, '在最右侧文件栏选择要查看的文件');
 				if (file.reading) return react.createElement('div', { className: 'cg-empty' }, '文件读取中…');
 				if (file.error) return react.createElement('div', { className: 'cg-error' }, '文件读取失败：\n' + file.error);
 				if (file.tooLarge) return react.createElement('div', { className: 'cg-empty' }, '文件过大（' + (file.size || 0) + ' 字节），暂不支持打开');
@@ -2125,8 +2143,6 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			const renderGuide = () => {
-				if (!file) return react.createElement('div', { className: 'cg-empty' }, '选择文件后，这里逐函数给出通俗解读');
-				if (file.reading) return react.createElement('div', { className: 'cg-empty' }, '源码读取中…');
 				if (file.explaining) return react.createElement(GuideLoading);
 				if (file.explainError) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.explainError + '\n\n可点击右上角「重新解读」重试');
 				if (file.error || file.tooLarge) return null;
@@ -2187,7 +2203,6 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			const renderCallGraph = () => {
-				if (!file) return react.createElement('div', { className: 'cg-empty' }, '选择文件后生成调用图');
 				if (file.explaining) return react.createElement(GuideLoading);
 				if (!file.callGraph) return react.createElement('div', { className: 'cg-empty' }, '该文件没有生成调用图');
 				return react.createElement(GraphView, { code: file.callGraph, onNodeClick: onGraphNodeClick });
@@ -2200,8 +2215,12 @@ html[data-cg-panel-open] [data-phase=active] {
 				'aria-label': '收起文件',
 				onClick: () => setOpen(false),
 			}, react.createElement(Icon, { name: 'chevronRight', size: 14 }));
-			const widths = paneWidths(Math.max(panelMinW(), Math.min(s.width, panelMaxW())), s.paneR);
-			const panel = react.createElement('div', { className: 'cg-panel', style: { width: Math.max(panelMinW(), Math.min(s.width, panelMaxW())) + 'px' } },
+			const showGuide = !!(file && file.guideOn);
+			// 面板宽只随 树/文件 变化;解读开关只在源码区内重新划分,面板不动。
+			// 打开文件时源码区有效宽钳到 [视窗1/3 下限, 屏幕-90 上限]
+			const effPane = { ...s.pane, code: effCodeOf(s.pane, showGuide) };
+			const panelW = panelWidthOf(effPane, !!file);
+			const panel = react.createElement('div', { className: 'cg-panel', style: { width: panelW + 'px' } },
 				react.createElement('div', { className: 'cg-resize', title: '调整宽度', onPointerDown: onResizeStart }),
 				collapseTab,
 				react.createElement('div', { className: 'cg-header' },
@@ -2216,24 +2235,25 @@ html[data-cg-panel-open] [data-phase=active] {
 					react.createElement('button', { className: 'cg-iconbtn', title: '关闭', onClick: () => setOpen(false) }, react.createElement(Icon, { name: 'close', size: 14 })),
 				),
 				react.createElement('div', { className: 'cg-body' },
-					react.createElement('div', { className: 'cg-main' },
+					file ? react.createElement('div', { className: 'cg-main' },
 						react.createElement('div', { className: 'cg-split' },
-							react.createElement('div', { className: 'cg-code-pane', style: file && file.guideOn ? { width: widths.codeW + 'px' } : { flex: '1 1 auto' } },
+							// 源码窗在左;解读打开时源码让出一块给解读,关闭时源码向右扩展收回
+							react.createElement('div', { className: 'cg-code-pane', style: { width: sourceWidthOf(s.pane, showGuide) + 'px' } },
 								react.createElement('div', { className: 'cg-pane-head' },
-									react.createElement('span', { className: 'cg-pane-title' }, file && file.view === 'preview' ? '预览' : '源码'),
-									react.createElement('span', { className: 'cg-pane-path' }, file ? file.path : ''),
+									react.createElement('span', { className: 'cg-pane-title' }, file.view === 'preview' ? '预览' : '源码'),
+									react.createElement('span', { className: 'cg-pane-path' }, file.path),
 									file && !file.reading && !file.error && !file.tooLarge && (isMarkdown(file.name) || isMermaidFile(file.name))
 										? react.createElement('button', { className: 'cg-btn', onClick: toggleView }, file.view === 'preview' ? '源码' : (isMermaidFile(file.name) ? '图表' : '预览'))
 										: null,
 									file && !file.reading && !file.error && !file.tooLarge && isExplainable(file.name)
 										? react.createElement('button', { className: 'cg-btn', title: file.guideOn ? '重新解读' : '解读', onClick: runExplain }, file.guideOn ? '重新解读' : '解读')
 										: null,
-									file ? react.createElement('button', { className: 'cg-btn', title: '关闭', onClick: closeFile }, '关闭') : null,
+									react.createElement('button', { className: 'cg-btn', title: '关闭', onClick: closeFile }, '关闭'),
 								),
 								renderCode(),
 							),
-							file && file.guideOn ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'code' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('code') }) : null,
-							file && file.guideOn ? react.createElement('div', { className: 'cg-guide-pane' },
+							showGuide ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'code' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('code') }) : null,
+							showGuide ? react.createElement('div', { className: 'cg-guide-pane', style: { width: s.pane.guide + 'px' } },
 								react.createElement('div', { className: 'cg-tabs' },
 									react.createElement('button', { className: 'cg-tab' + (tab === 'guide' ? ' cg-tab-on' : ''), onClick: () => setTab('guide') }, '函数解读'),
 									react.createElement('button', { className: 'cg-tab' + (tab === 'graph' ? ' cg-tab-on' : ''), onClick: () => setTab('graph') }, '调用图'),
@@ -2243,20 +2263,20 @@ html[data-cg-panel-open] [data-phase=active] {
 							) : null,
 						),
 						react.createElement('div', { className: 'cg-meta' },
-							status
-								? react.createElement('span', { className: 'cg-status ' + (status.ok ? 'cg-status-ok' : 'cg-status-err') }, status.text)
-								: (!file || file.error || file.tooLarge ? '就绪'
-									: file.explaining ? '解读生成中…'
-										: !file.guideOn ? (isExplainable(file.name) ? '文件已加载 · 点「解读」开始解读' : '文件已加载')
-											: (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : '')),
+							file.error || file.tooLarge ? '就绪'
+								: file.explaining ? '解读生成中…'
+									: !file.guideOn ? (isExplainable(file.name) ? '文件已加载 · 点「解读」开始解读' : '文件已加载')
+										: (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : ''),
 						),
-					),
-					react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'tree' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('tree') }),
-					react.createElement('div', { className: 'cg-tree', style: { width: widths.treeW + 'px' } },
+					) : null,
+					file ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'tree' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('tree') }) : null,
+					// 文件树常驻最右;未打开文件时是唯一视窗,面板即树宽
+					react.createElement('div', { className: 'cg-tree', style: { width: s.pane.tree + 'px' } },
 						react.createElement('div', { className: 'cg-searchbar' },
 							react.createElement('input', { className: 'cg-search', type: 'text', placeholder: '搜索文件', value: s.query, spellCheck: false, onChange: (e) => setQuery(e.target.value) }),
 							s.searching ? react.createElement('span', { className: 'cg-search-state' }, '…') : null,
 						),
+						status ? react.createElement('div', { className: 'cg-status ' + (status.ok ? 'cg-status-ok' : 'cg-status-err'), style: { padding: '2px 10px', flex: 'none' } }, status.text) : null,
 						react.createElement('div', { className: 'cg-tree-scroll' }, s.query.trim() ? renderSearch() : renderTree()),
 					),
 				),
@@ -2273,7 +2293,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			document.head.appendChild(styleEl);
 			ctx.effect(() => () => { styleEl.remove() }, 'dsh-files: styles');
 
-			// 双击对话区收起面板(排除输入控件与可交互元素),与 file-explorer 行为一致
+			// 双击对话区收起面板(排除输入控件与可交互元素)
 			const onChatDblClick = (e) => {
 				if (!store.open) return;
 				const target = e.target;

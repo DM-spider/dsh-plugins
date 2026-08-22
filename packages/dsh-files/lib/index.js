@@ -1,8 +1,10 @@
 /**
  * dsh-files — host half.
  *
- * Registers the /plugins/dsh-files/* HTTP routes for the code reading
- * companion panel (list / explain). `explain` works in two phases:
+ * Registers the /plugins/dsh-files/* HTTP routes for the files sidebar:
+ * list (file tree), read (file content), search (filename search), and
+ * explain (per-function AI explanations + mermaid call graph). `explain`
+ * runs in two phases:
  *
  *  1. OUTLINE — the model lists every function definition with absolute
  *     line numbers (name + range only, tiny output).
