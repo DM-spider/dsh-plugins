@@ -1,7 +1,7 @@
 {
   "name": "dsh-files",
   "version": "0.1.0",
-  "description": "Files sidebar for DeepSeek Harness: workspace file tree with search, file-type icons, auto-refresh and markdown/mermaid preview, plus on-demand per-function AI explanations and a mermaid call graph for code files",
+  "description": "Files sidebar for DeepSeek Harness: workspace file tree with search, file-type icons, auto-refresh and markdown/mermaid preview, on-demand per-function AI explanations and a mermaid call graph for code files, plus image/PDF preview and in-file search",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

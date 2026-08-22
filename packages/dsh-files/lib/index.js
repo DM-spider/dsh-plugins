@@ -35,6 +35,8 @@ const OUTLINE_MAX_TOKENS = 8000
 const EXPLAIN_MAX_TOKENS = 24000
 const MAX_GRAPH_NODES = 120
 const MAX_GRAPH_EDGES = 200
+const MAX_CACHE_ENTRIES = 64
+const MAX_RAW_BYTES = 20 * 1024 * 1024 // 图片预览字节流上限
 
 const SINGLE_PROMPT = [
   '你是一位资深代码讲解老师,面向初学者做逐函数解读。用户会贴出一段完整源代码。',
@@ -92,17 +94,27 @@ export function apply(ctx) {
   const fs = ctx.fs
   const message = (err) => String((err && err.message) || err)
 
+  const MAX_BODY_BYTES = 1048576
   const readBody = async (req) => {
     const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
+    let size = 0
+    for await (const chunk of req) {
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) throw new Error('request body too large')
+      chunks.push(chunk)
+    }
     return Buffer.concat(chunks).toString('utf8')
   }
   const send = (res, status, obj) => {
-    res.writeHead(status, {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-    })
-    res.end(JSON.stringify(obj))
+    // 客户端可能已断开(关页签/刷新):向已销毁的响应写入会抛错,直接吞掉
+    if (!res || res.destroyed || res.writableEnded) return
+    try {
+      res.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+      })
+      res.end(JSON.stringify(obj))
+    } catch { /* response gone — client already left */ }
   }
   const param = (req, key) => new URL(req.url ?? '/', 'http://x').searchParams.get(key)
 
@@ -142,16 +154,25 @@ export function apply(ctx) {
       }
       throw new Error('无法解析模型路由')
     })()
+    // 失败不缓存:模型服务瞬断恢复后,下一次解读重试解析,而不是永久失败
+    routePromise = routePromise.catch((err) => { routePromise = null; throw err })
     return routePromise
   }
 
   // One-shot model call through the resolved route. Consumes raw stream
   // chunks by hand so this bundle needs no runtime imports.
+  const LLM_CALL_TIMEOUT_MS = 120000
   const llmCall = async (system, userText, maxTokens, signal) => {
     const route = await resolveRoute()
     const llm = ctx.get('llm')
     const provider = route.provider
     const model = route.model
+    // 上游挂起防护:120s 超时(flash 快模型正常几秒~几十秒)。signal 传入
+    // stream,流式实现会在中断时停止迭代,解读不会永久 pending
+    const timeoutSignal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(LLM_CALL_TIMEOUT_MS)
+      : null
+    const sig = signal || timeoutSignal
     let text = ''
     let finish = null
     for await (const chunk of llm.stream({
@@ -169,8 +190,9 @@ export function apply(ctx) {
       // 解读只是"把函数用中文讲清楚",不需要推理;关闭思考,否则默认
       // reasoningEffort=max 的推理 token 会烧光输出预算导致 max-tokens
       reasoningEffort: 'off',
-      signal,
+      signal: sig,
     })) {
+      if (sig && sig.aborted) throw new Error('解读请求超时')
       if (chunk.type === 'text-delta') text += chunk.text
       else if (chunk.type === 'finish') finish = chunk
     }
@@ -225,8 +247,12 @@ export function apply(ctx) {
         const fns = Array.isArray(parsed.functions) ? parsed.functions : []
         for (const f of fns) {
           const name = String((f && f.name) || '').trim()
-          if (!name || seen.has(name)) continue
-          seen.add(name)
+          if (!name) continue
+          // 同名不同函数(如多个类的 run/__init__)必须都保留;
+          // 用 名字#起始行 近似去重,只压掉同一函数被模型重复报告
+          const key = name + '#' + (Math.max(1, Number(f && f.start) || 1))
+          if (seen.has(key)) continue
+          seen.add(key)
           merged.push({
             name,
             start: Math.max(1, Number(f && f.start) || 1),
@@ -287,10 +313,11 @@ export function apply(ctx) {
           const { text } = await llmCall(EXPLAIN_PROMPT, userText, EXPLAIN_MAX_TOKENS)
           const parsed = parseJson(text)
           const fns = Array.isArray(parsed.functions) ? parsed.functions : []
-          for (const f of fns) {
-            const name = String((f && f.name) || '').trim()
-            if (!name) continue
-            explanations.set(name, {
+          // 按清单一一对应(以清单序号对齐,而不是按 name:同名函数必须各归各)
+          for (let k = 0; k < fns.length && k < w.funcs.length; k++) {
+            const wf = w.funcs[k]
+            const f = fns[k]
+            explanations.set(wf.name + '#' + wf.start, {
               summary: String((f && f.summary) || ''),
               // flow 保持原始值:新格式是数组(步骤+行号),老格式是字符串,
               // 绝不能 String() 强转,否则数组变 [object Object]
@@ -307,7 +334,7 @@ export function apply(ctx) {
     await Promise.all(Array.from({ length: Math.min(EXPLAIN_CONCURRENCY, windows.length) }, () => worker()))
 
     const functions = outlineFunctions.map((f) => {
-      const e = explanations.get(f.name)
+      const e = explanations.get(f.name + '#' + f.start)
       return {
         name: f.name,
         start: f.start,
@@ -334,8 +361,10 @@ export function apply(ctx) {
     const functions = []
     for (const f of fns) {
       const name = String((f && f.name) || '').trim()
-      if (!name || seen.has(name)) continue
-      seen.add(name)
+      if (!name) continue
+      const key = name + '#' + (Math.max(1, Number(f && f.start) || 1))
+      if (seen.has(key)) continue
+      seen.add(key)
       functions.push({
         name,
         start: Math.max(1, Number(f && f.start) || 1),
@@ -371,7 +400,7 @@ export function apply(ctx) {
       edgeSet: explainRes.edgeSet,
       warnings: outlineRes.warnings.concat(explainRes.warnings),
       chunks: explainRes.windows,
-      route: outlineRes.route,
+      route: outlineRes.route || 'unknown',
     }
   }
 
@@ -383,10 +412,14 @@ export function apply(ctx) {
     const edges = new Set()
     const names = (functions || []).map((f) => f.name).filter((n) => n && n.length >= 2)
     if (names.length < 2) return edges
-    const regexes = new Map()
-    for (const n of names) {
-      regexes.set(n, new RegExp('(?<![A-Za-z0-9_$])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\('))
-    }
+    // 只扫图上会渲染的函数名(MAX_GRAPH_NODES),并把全部备选名合并成
+    // 一个正则:每个函数体只扫一遍。原来"每个 caller × 每个 callee"
+    // 各自全文跑正则,大文件(几百个函数)是 O(N²×L),解读会卡数十秒
+    const visible = names.slice(0, MAX_GRAPH_NODES)
+    const re = new RegExp(
+      '(?<![A-Za-z0-9_$])(' + visible.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\s*\\(',
+      'g'
+    )
     // 函数体范围用"本函数起始行 → 下一函数起始行"精确定界(起始行已用
     // 签名修正),最后一个函数延伸到文件末尾,不依赖模型猜的结束行
     for (let ci = 0; ci < functions.length; ci++) {
@@ -396,10 +429,11 @@ export function apply(ctx) {
       const to = Math.min(lines.length, nextStart - 1, caller.start + 2000)
       if (to < from) continue
       const body = lines.slice(from - 1, to).join('\n')
-      for (const callee of names) {
-        if (callee === caller.name) continue
-        const re = regexes.get(callee)
-        if (re && re.test(body)) edges.add(caller.name + '\u0000' + callee)
+      re.lastIndex = 0
+      let m
+      while ((m = re.exec(body)) !== null) {
+        const callee = m[1]
+        if (callee !== caller.name) edges.add(caller.name + '\u0000' + callee)
       }
     }
     return edges
@@ -420,10 +454,17 @@ export function apply(ctx) {
       .slice(0, MAX_GRAPH_EDGES)
     const nodeIds = new Map()
     const rows = ['flowchart LR']
+    const cleanLabel = (s) => String(s)
+      .replace(/\r?\n/g, ' ')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/#/g, '&#35;')
+      .replace(/"/g, "'")
     for (const name of nodeNames) {
       const id = 'n' + (nodeIds.size + 1)
       nodeIds.set(name, id)
-      rows.push('  ' + id + '["' + String(name).replace(/"/g, "'") + '"]')
+      rows.push('  ' + id + '["' + cleanLabel(name) + '"]')
     }
     for (const key of edges) {
       const [a, b] = key.split('\u0000')
@@ -461,6 +502,8 @@ export function apply(ctx) {
   // line-range highlight covers the whole decorated definition.
   const correctRanges = (functions, lines, langHint) => {
     const norm = (s) => String(s).replace(/\s+/g, '')
+    // 预计算去空白行(函数数 × 全文件扫描时不再逐次 replace)
+    const normLines = lines.map(norm)
     for (const f of functions) {
       if (!f.signature) continue
       const sigAll = String(f.signature).split('\n').map((x) => norm(x)).filter((x) => x.length >= 4)
@@ -470,12 +513,22 @@ export function apply(ctx) {
       const lo = Math.max(1, f.start - 10)
       const hi = Math.min(lines.length, f.start + 10)
       for (let i = lo; i <= hi; i++) {
-        if (norm(lines[i - 1]).startsWith(anchor)) { found = i; break }
+        if (normLines[i - 1].startsWith(anchor)) { found = i; break }
       }
       if (found === -1) {
+        // 全文件回退:同名签名(如多个类的 __init__)不能取"第一个",
+        // 选 未被其他函数区间占用 且 离模型原始行号最近 的候选
+        let best = -1
+        let bestDist = Infinity
+        let bestOcc = 1
         for (let i = 1; i <= lines.length; i++) {
-          if (norm(lines[i - 1]).startsWith(anchor)) { found = i; break }
+          if (!normLines[i - 1].startsWith(anchor)) continue
+          const occupied = functions.some((g) => g !== f && i > g.start && i <= g.end)
+          const dist = Math.abs(i - f.start)
+          const occ = occupied ? 1 : 0
+          if (occ < bestOcc || (occ === bestOcc && dist < bestDist)) { best = i; bestDist = dist; bestOcc = occ }
         }
+        found = best
       }
       if (found > 0) {
         // 向前收装饰器/注解行(@ 开头),让 start 覆盖整个装饰定义
@@ -500,12 +553,35 @@ export function apply(ctx) {
         const dm = /^(\s*)/.exec(lines[defIdx - 1])
         const defIndent = dm ? dm[1].length : 0
         let lastContent = defIdx
+        // 三引号字符串可跨行且中间行常顶格:顶格行不能算"缩进回到基级",
+        // 否则函数体被提前截断
+        let inTriple = null
         for (let ln = defIdx + 1; ln <= lines.length; ln++) {
           const line = lines[ln - 1]
+          if (inTriple) {
+            const closeIdx = line.indexOf(inTriple)
+            if (closeIdx >= 0) {
+              inTriple = null
+              lastContent = ln
+              // 同一行闭合后还有内容:按正常缩进逻辑继续判断该行
+              if (line.slice(closeIdx + 3).trim() === '') continue
+            } else {
+              lastContent = ln
+              continue
+            }
+          }
           if (/^\s*$/.test(line)) continue
           // 多行签名/长表达式的续行收尾符(只含括号逗号冒号)不算回到基级
           if (/^\s*[)\]},]+/.test(line)) continue
           const indent = /^(\s*)/.exec(line)[1].length
+          const triple = /('''|""")/.exec(line)
+          if (triple) {
+            if (indent <= defIndent) break // 顶格代码行(即使含三引号):函数结束
+            const rest = line.slice(triple.index + 3)
+            if (rest.indexOf(triple[1]) < 0) inTriple = triple[1]
+            lastContent = ln
+            continue
+          }
           if (indent <= defIndent) break
           lastContent = ln
         }
@@ -519,19 +595,32 @@ export function apply(ctx) {
       // 括号已闭合却仍无 {,说明是单行箭头函数等无花括号形式,立即放弃,
       // 避免跨行误配到下一个函数或普通代码的 {
       const bodyBraceLine = (fromLine) => {
+        // start 可能被上收到装饰器行(@ 开头):先跳过,否则首行 paren=0
+        // 且无 { 会被误判为"无花括号形式"整体放弃配对
+        let first = fromLine
+        while (first <= Math.min(lines.length, fromLine + 30) && /^\s*@/.test(lines[first - 1])) first++
         let paren = 0
-        for (let ln = fromLine; ln <= Math.min(lines.length, fromLine + 30); ln++) {
+        // 字符串/块注释跨行保持:JS 模板串(`)可跨行,块注释 /* */ 跨行,
+        // 否则第二行起的 { ( 会被当成代码计进括号配对
+        let inStr = null
+        let inBlock = false
+        for (let ln = first; ln <= Math.min(lines.length, fromLine + 30); ln++) {
           const line = lines[ln - 1]
-          let inStr = null
           for (let i = 0; i < line.length; i++) {
             const ch = line[i]
+            const nx = line[i + 1]
+            if (inBlock) {
+              if (ch === '*' && nx === '/') { inBlock = false; i++; continue }
+              continue
+            }
             if (inStr) {
               if (ch === '\\') { i++; continue }
               if (ch === inStr) inStr = null
               continue
             }
             if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue }
-            if (ch === '/' && line[i + 1] === '/') break // 行注释
+            if (ch === '/' && nx === '/') break // 行注释
+            if (ch === '/' && nx === '*') { inBlock = true; i++; continue }
             if (ch === '(') paren++
             else if (ch === ')') paren = Math.max(0, paren - 1)
             else if (ch === '{' && paren === 0) return ln
@@ -543,9 +632,9 @@ export function apply(ctx) {
       const braceEndLine = (braceLine) => {
         let depth = 0
         let inBlock = false
+        let inStr = null
         for (let ln = braceLine; ln <= lines.length; ln++) {
           const line = lines[ln - 1]
-          let inStr = null
           for (let i = 0; i < line.length; i++) {
             const ch = line[i]
             const nx = line[i + 1]
@@ -686,14 +775,38 @@ export function apply(ctx) {
       ctx.effect(() => webServer.register({ kind: 'exact', path, handler }), 'dsh-files: ' + path)
     }
 
+    // 工作区包含校验:DSH 宿主 fs 的 cwd 只是解析基准、不等于工作区根
+    // (客户端按工作区的绝对路径发请求),所以边界由客户端显式给出:
+    // 每个路由携带 root(工作区根,来自客户端文件树),目标路径必须位于
+    // root 之内;缺 root 或越界一律 403。../ 穿越与任意绝对路径
+    // 都被同一条规则挡住
+    const normKey = (s) => String(s || '').replace(/\\/g, '/').replace(/\/+$/, '')
+    const insideRoot = async (rootPath, target) => {
+      if (!rootPath) return false
+      try {
+        const rt = await fs.resolve(rootPath)
+        const rk = normKey(rt.targetKey)
+        const key = normKey(target.targetKey)
+        if (!rk || !key) return false
+        return key === rk || key.startsWith(rk + '/')
+      } catch {
+        return false
+      }
+    }
+
     route('/plugins/dsh-files/list', async (req, res) => {
       const path = param(req, 'path')
-      if (!path) {
-        send(res, 400, { error: 'missing path' })
+      const root = param(req, 'root')
+      if (!path || !root) {
+        send(res, 400, { error: 'missing path/root' })
         return
       }
       try {
         const target = await fs.resolve(path)
+        if (!(await insideRoot(root, target))) {
+          send(res, 403, { error: 'outside-workspace' })
+          return
+        }
         const info = await fs.stat(target)
         if (info === undefined || info.type !== 'directory') {
           send(res, 404, { error: 'not-a-directory' })
@@ -717,12 +830,18 @@ export function apply(ctx) {
     // no LLM involved. The explanation endpoint runs fully in parallel.
     route('/plugins/dsh-files/read', async (req, res) => {
       const path = param(req, 'path')
-      if (!path) {
-        send(res, 400, { error: 'missing path' })
+      const root = param(req, 'root')
+      if (!path || !root) {
+        send(res, 400, { error: 'missing path/root' })
         return
       }
+      let size = 0
       try {
         const target = await fs.resolve(path)
+        if (!(await insideRoot(root, target))) {
+          send(res, 403, { error: 'outside-workspace' })
+          return
+        }
         const info = await fs.stat(target)
         if (info === undefined) {
           send(res, 404, { error: 'not-found' })
@@ -732,14 +851,35 @@ export function apply(ctx) {
           send(res, 400, { error: 'not-a-file' })
           return
         }
-        const size = typeof info.size === 'number' ? info.size : 0
+        size = typeof info.size === 'number' ? info.size : 0
         if (size > MAX_EXPLAIN_BYTES) {
+          // 大文件:先探测前 8KB 判二进制(zip/rar 等通常超限),
+          // 二进制按"无法预览"约定返回,而不是"文件过大"
+          if (typeof fs.readBytes === 'function') {
+            try {
+              const head = await fs.readBytes(target, undefined, 8192)
+              if (head.includes(0)) {
+                send(res, 200, { binary: true, size })
+                return
+              }
+            } catch { /* 探测失败:按原路径返回 tooLarge */ }
+          }
           send(res, 200, { tooLarge: true, size })
           return
         }
         const content = await fs.readText(target)
+        if (content.indexOf('\u0000') >= 0) {
+          send(res, 200, { binary: true, size })
+          return
+        }
         send(res, 200, { content, size })
       } catch (err) {
+        // 二进制/非 UTF-8(FS_NOT_TEXT)是"无法预览",不是错误:
+        // 不把宿主内部错误原文透传给用户
+        if (err && err.code === 'FS_NOT_TEXT') {
+          send(res, 200, { binary: true, size })
+          return
+        }
         send(res, 500, { error: message(err) })
       }
     })
@@ -759,10 +899,14 @@ export function apply(ctx) {
         const matches = []
         const stack = [root]
         let truncated = false
+        let rk = ''
+        try { const rt = await fs.resolve(root); rk = normKey(rt.targetKey) } catch { rk = '' }
         while (stack.length > 0 && nodes < maxNodes && matches.length < maxMatches) {
           const dir = stack.pop()
           let target
           try { target = await fs.resolve(dir) } catch { continue }
+          const key = normKey(target.targetKey)
+          if (!rk || !key || !(key === rk || key.startsWith(rk + '/'))) continue
           let entries
           try { entries = await fs.listDir(target) } catch { continue }
           nodes += entries.length
@@ -784,6 +928,58 @@ export function apply(ctx) {
       }
     })
 
+    // 图片/PDF 预览:按扩展名返回原始字节流(<img>/<iframe> 直接加载)。
+    // 文本读取(readText)会拒绝二进制文件,图片/PDF 必须走这里
+    const RAW_MIME = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      webp: 'image/webp',
+      gif: 'image/gif',
+      svg: 'image/svg+xml',
+      pdf: 'application/pdf',
+    }
+    route('/plugins/dsh-files/raw', async (req, res) => {
+      const path = param(req, 'path')
+      const root = param(req, 'root')
+      if (!path || !root) {
+        send(res, 400, { error: 'missing path/root' })
+        return
+      }
+      try {
+        const target = await fs.resolve(path)
+        if (!(await insideRoot(root, target))) {
+          send(res, 403, { error: 'outside-workspace' })
+          return
+        }
+        const info = await fs.stat(target)
+        if (info === undefined) {
+          send(res, 404, { error: 'not-found' })
+          return
+        }
+        if (info.type !== 'file') {
+          send(res, 400, { error: 'not-a-file' })
+          return
+        }
+        const ext = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : ''
+        const mime = RAW_MIME[ext] || 'application/octet-stream'
+        if (typeof fs.readBytes !== 'function') {
+          send(res, 501, { error: 'fs backend 不支持字节读取' })
+          return
+        }
+        const bytes = await fs.readBytes(target, undefined, MAX_RAW_BYTES)
+        if (res.destroyed || res.writableEnded) return
+        res.writeHead(200, {
+          'content-type': mime,
+          'content-length': String(bytes.length),
+          'cache-control': 'no-store',
+        })
+        res.end(bytes)
+      } catch (err) {
+        send(res, 500, { error: message(err) })
+      }
+    })
+
     route('/plugins/dsh-files/explain', async (req, res) => {
       if (req.method !== 'POST') {
         send(res, 405, { error: 'use POST' })
@@ -797,12 +993,17 @@ export function apply(ctx) {
         return
       }
       const path = String((body && body.path) || '')
-      if (!path) {
-        send(res, 400, { error: 'missing path' })
+      const root = String((body && body.root) || '')
+      if (!path || !root) {
+        send(res, 400, { error: 'missing path/root' })
         return
       }
       try {
         const target = await fs.resolve(path)
+        if (!(await insideRoot(root, target))) {
+          send(res, 403, { error: 'outside-workspace' })
+          return
+        }
         const info = await fs.stat(target)
         if (info === undefined) {
           send(res, 404, { error: 'not-found' })
@@ -819,54 +1020,86 @@ export function apply(ctx) {
         }
         const content = await fs.readText(target)
         const mtime = typeof info.mtimeMs === 'number' ? info.mtimeMs : (info.mtime ?? 0)
+        if (content.indexOf('\u0000') >= 0) {
+          send(res, 200, { binary: true, size })
+          return
+        }
+        // 命中缓存直接返回(缓存值可能是 data 或 in-flight promise)
         const hit = cache.get(path)
         if (hit && hit.mtime === mtime && !body.refresh) {
-          send(res, 200, hit.data)
+          const data = hit.promise ? await hit.promise : hit.data
+          send(res, 200, data)
+          return
+        }
+        // 同一文件并发解读去重:共享同一个 in-flight promise,
+        // 避免双页签/重复点击双倍烧 token(mtime 一致才算同一版文件)
+        const pending = hit && hit.mtime === mtime && hit.promise ? hit.promise : null
+        if (pending !== null) {
+          const data = await pending
+          send(res, 200, data)
           return
         }
         const baseName = path.split(/[\\/]/).pop()
         const langHint = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : ''
         const lines = content.replace(/\r\n/g, '\n').split('\n')
-
-        let result
-        if (lines.length <= SINGLE_CALL_MAX_LINES) {
-          try {
-            result = await analyzeSingle(lines, baseName, langHint)
-          } catch (err) {
-            // 单次调用失败(如输出超限、未识别到函数)时自动回退到分段解读
-            result = await analyzeChunked(lines, baseName, langHint)
-            result.warnings.unshift('单次解读失败,已自动回退分段解读: ' + message(err))
-          }
-        } else {
-          result = await analyzeChunked(lines, baseName, langHint)
-        }
-        // 仍为空:用正则判断文件到底像不像代码,给出可操作的提示
-        if (result.functions.length === 0) {
-          if (looksLikeCode(content)) {
-            result.warnings.push('该文件疑似代码,但模型未识别到函数;可点「重新解读」重试')
+        const generate = async () => {
+          let result
+          if (lines.length <= SINGLE_CALL_MAX_LINES) {
+            try {
+              result = await analyzeSingle(lines, baseName, langHint)
+            } catch (err) {
+              // 单次调用失败(如输出超限、未识别到函数)时自动回退到分段解读
+              result = await analyzeChunked(lines, baseName, langHint)
+              result.warnings.unshift('单次解读失败,已自动回退分段解读: ' + message(err))
+            }
           } else {
-            result.warnings.push('该文件看起来不是代码(纯文本/配置),没有函数是正常的')
+            result = await analyzeChunked(lines, baseName, langHint)
+          }
+          // 仍为空:用正则判断文件到底像不像代码,给出可操作的提示
+          if (result.functions.length === 0) {
+            if (looksLikeCode(content)) {
+              result.warnings.push('该文件疑似代码,但模型未识别到函数;可点「重新解读」重试')
+            } else {
+              result.warnings.push('该文件看起来不是代码(纯文本/配置),没有函数是正常的')
+            }
+          }
+          // 用签名反查修正行号(模型数行不准),再夹紧区间
+          result.functions = correctRanges(result.functions, lines, langHint)
+          result.functions = normalizeFlowSteps(result.functions)
+          result.functions = anchorFlowSteps(result.functions, lines)
+          // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
+          const scanned = scanEdges(result.functions, lines)
+          for (const key of scanned) result.edgeSet.add(key)
+          const callGraph = buildCallGraph(result.functions, result.edgeSet)
+          return {
+            path,
+            functions: result.functions,
+            callGraph,
+            warnings: result.warnings,
+            chunks: result.chunks,
+            model: result.route || 'unknown',
           }
         }
-        // 用签名反查修正行号(模型数行不准),再夹紧区间
-        result.functions = correctRanges(result.functions, lines, langHint)
-        result.functions = normalizeFlowSteps(result.functions)
-        result.functions = anchorFlowSteps(result.functions, lines)
-        // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
-        const scanned = scanEdges(result.functions, lines)
-        for (const key of scanned) result.edgeSet.add(key)
-        const callGraph = buildCallGraph(result.functions, result.edgeSet)
-        const data = {
-          path,
-          functions: result.functions,
-          callGraph,
-          warnings: result.warnings,
-          chunks: result.chunks,
-          model: result.route,
-        }
-        cache.set(path, { mtime, data })
+        // LRU 上限:长期多项目使用不无限膨胀
+        if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value)
+        const entry = { mtime, promise: null }
+        entry.promise = generate().then((data) => {
+          // 生成期间文件可能又变过(新 mtime 产生新 entry):旧结果不覆盖
+          if (cache.get(path) === entry) cache.set(path, { mtime, data })
+          return data
+        }).catch((err) => {
+          if (cache.get(path) === entry) cache.delete(path)
+          throw err
+        })
+        cache.set(path, entry)
+        const data = await entry.promise
         send(res, 200, data)
       } catch (err) {
+        // 二进制/非 UTF-8:按"无法解读"约定返回,不透传宿主内部错误
+        if (err && err.code === 'FS_NOT_TEXT') {
+          send(res, 200, { binary: true })
+          return
+        }
         send(res, 500, { error: message(err) })
       }
     })

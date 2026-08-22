@@ -9,8 +9,11 @@
 
 - 标题栏侧栏图标开关,右侧面板三视窗(文件树 / 源码 / 解读)各自可拖分栏线调宽,面板左缘可拖宽、拖到最右侧收起,布局持久化
 - 文件树:搜索(300ms 防抖)、Material 主题彩色文件类型图标、文件大小、错误行、全部展开/折叠(500 目录上限)、手动刷新、3 秒自动刷新(可关)
-- 源码窗:14px 逐行语法高亮 + 行号;点击代码行 → 对应解读项闪烁;点击卡片/变量名反向定位;Ctrl+点击标识符跳转定义;Alt+←/→ 跳转历史
-- Markdown(md/markdown)默认 GFM 预览(表格/引用/任务列表/代码高亮/mermaid 围栏),可切「源码」;.mmd/.mermaid 整图渲染
+- 多页签 + VSCode 风格预览页签(单击树文件=预览、双击=固定打开;切页保留各自滚动/解读/视图)
+- 源码窗:14px 逐行语法高亮 + 行号;点击代码行 → 对应解读项闪烁;点击卡片/变量名反向定位;Ctrl+点击标识符跳转定义;Alt+←/→ 跳转历史;Ctrl+F 文件内搜索(计数 + 全部命中高亮 + 当前命中橙色,Enter/Shift+Enter 上下跳、Aa 区分大小写)
+- 万行文件虚拟滚动:只渲染可视行,大文件浏览不卡
+- Markdown(md/markdown)默认 GFM 预览(表格/引用/任务列表/代码高亮/mermaid 围栏),可切「源码」;「目录」浮层列出全部标题,点击平滑跳转、滚动跟随高亮当前章节;.mmd/.mermaid 整图渲染
+- 图片(png/jpg/webp/gif/svg)内嵌预览;PDF 用浏览器内置查看器预览;二进制文件识别,不再乱码上屏
 - 解读:「解读」按钮按需生成,首次/未改动优先缓存(host 按路径+mtime),解读框打开时再点 = 重新解读(强制 LLM);文件外部改动后点解读自动走 LLM 并同步源码;解读框右上角 ✕ 只关解读不关源码
 - 生成中看板:二次元鲸鱼娘(内嵌透明 PNG,素材来自 dafeiyu-pet 二创)+ 三点循环,延迟 300ms 显示防闪烁
 - 双击对话区收起面板
@@ -34,7 +37,7 @@ pnpm install
 
 ## 结构
 
-- `lib/index.js` — host 半部:`/plugins/dsh-files/list`(文件树)+ `/plugins/dsh-files/read`(读文件)+ `/plugins/dsh-files/search`(文件名搜索)+ `/plugins/dsh-files/explain`(读文件 → 默认模型路由生成逐函数解读 JSON + mermaid 调用图)
+- `lib/index.js` — host 半部:`/plugins/dsh-files/list`(文件树)+ `/plugins/dsh-files/read`(读文件)+ `/plugins/dsh-files/search`(文件名搜索)+ `/plugins/dsh-files/raw`(图片等二进制字节流)+ `/plugins/dsh-files/explain`(读文件 → 默认模型路由生成逐函数解读 JSON + mermaid 调用图)
 - `lib/client.js` — web client 半部:`shell.overlay` 右侧面板 + 标题栏开关按钮
 - `cordis.patch.yml` — bundle 补丁,把 `files` 行插入 profile 的 host 组合
 
