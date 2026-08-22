@@ -667,6 +667,46 @@ export function apply(ctx) {
       }
     })
 
+    // 文件名搜索:按名递归匹配(限节点/结果数),目录跳过 .git/node_modules
+    route('/plugins/code-guide/search', async (req, res) => {
+      const root = param(req, 'root')
+      const query = String(param(req, 'q') || '').toLowerCase().trim()
+      if (!root || !query) {
+        send(res, 200, { matches: [], truncated: false })
+        return
+      }
+      try {
+        const maxNodes = 4000
+        const maxMatches = 300
+        let nodes = 0
+        const matches = []
+        const stack = [root]
+        let truncated = false
+        while (stack.length > 0 && nodes < maxNodes && matches.length < maxMatches) {
+          const dir = stack.pop()
+          let target
+          try { target = await fs.resolve(dir) } catch { continue }
+          let entries
+          try { entries = await fs.listDir(target) } catch { continue }
+          nodes += entries.length
+          for (const e of entries) {
+            const p = fs.processPath(e.target)
+            if (e.type === 'directory') {
+              if (e.name === '.git' || e.name === 'node_modules') continue
+              stack.push(p)
+              if (e.name.toLowerCase().includes(query)) matches.push({ name: e.name, path: p, type: 'directory', size: null })
+            } else if (e.name.toLowerCase().includes(query)) {
+              matches.push({ name: e.name, path: p, type: e.type, size: typeof e.size === 'number' ? e.size : null })
+            }
+          }
+        }
+        if (nodes >= maxNodes || matches.length >= maxMatches) truncated = true
+        send(res, 200, { matches, truncated })
+      } catch (err) {
+        send(res, 500, { error: message(err) })
+      }
+    })
+
     route('/plugins/code-guide/explain', async (req, res) => {
       if (req.method !== 'POST') {
         send(res, 405, { error: 'use POST' })
