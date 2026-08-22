@@ -812,7 +812,20 @@ export function apply(ctx) {
           send(res, 404, { error: 'not-a-directory' })
           return
         }
-        const entries = await fs.listDir(target)
+        const dirKey = normKey(target.targetKey)
+        const seenDirs = new Set()
+        const entries = (await fs.listDir(target)).filter((e) => {
+          if (e.type !== 'directory') return true
+          // listDir 返回已解析的真实目标:符号链接目录指向自身或祖先
+          // 会在树里形成环路,直接不展示;同目录多个链接指向同一真实
+          // 目录也只保留第一个(展开状态按路径共享,重复展示无意义)
+          const key = normKey(e.target && e.target.targetKey)
+          if (!key) return true
+          if (key === dirKey || dirKey.startsWith(key + '/')) return false
+          if (seenDirs.has(key)) return false
+          seenDirs.add(key)
+          return true
+        })
         send(res, 200, {
           entries: entries.map((e) => ({
             name: e.name,

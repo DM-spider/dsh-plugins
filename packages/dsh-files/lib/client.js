@@ -69,6 +69,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-body { flex: 1; display: flex; min-height: 0; }
 .cg-tree {
   flex: none; overflow: hidden; user-select: none;
+  display: flex; flex-direction: column;
 }
 .cg-trow {
   display: flex; align-items: center; gap: 3px;
@@ -183,10 +184,12 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-guide { flex: 1; overflow: auto; padding: 8px; }
 .cg-card {
   border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px;
-  padding: 8px 10px; margin-bottom: 8px; cursor: pointer;
+  padding: 8px 10px; margin-bottom: 8px;
   background: var(--dsw-alias-bg-layer-1);
 }
-.cg-card:hover { border-color: var(--dsw-alias-brand-primary); }
+/* 主解读区(函数名 + 摘要)是卡片内唯一可点击跳转的区域 */
+.cg-card-main { cursor: pointer; border-radius: 6px; }
+.cg-card-main:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .cg-card-on { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
 .cg-item-flash { animation: cg-card-flash 1.5s ease-out 1; }
 @keyframes cg-card-flash {
@@ -352,7 +355,6 @@ html[data-cg-panel-open] [data-phase=active] {
   font-size: 12px; overflow: auto; white-space: pre-wrap;
 }
 /* ---------- 文件树增强 ---------- */
-.cg-tree { display: flex; flex-direction: column; }
 .cg-tree-scroll { flex: 1; overflow: auto; padding: 2px 0 8px; }
 .cg-searchbar { position: relative; padding: 6px 8px 4px; flex: none; user-select: text; }
 .cg-search {
@@ -479,6 +481,8 @@ html[data-cg-panel-open] [data-phase=active] {
 		const MAX_EXPAND_DIRS = 500;
 
 		const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+		// 按行拆分(统一 \r\n → \n):源码/预览/搜索/跳转等多处共用
+		const contentLines = (content) => String(content || '').replace(/\r\n/g, '\n').split('\n');
 
 		// ---------- mermaid (lazy engine reused from @omdsh-dev/dsh-genui) ----------
 		let mermaidAssetPromise = null;
@@ -674,7 +678,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		let mdMermaidBlocks = [];
 		const renderMarkdown = (text) => {
 			mdMermaidBlocks = [];
-			const lines = String(text).replace(/\r\n/g, '\n').split('\n');
+			const lines = contentLines(text);
 			const out = [];
 			const headings = [];
 			// GitHub 风格标题锚点:小写 → 去掉 markdown 格式与标点(保留字母/
@@ -951,8 +955,10 @@ html[data-cg-panel-open] [data-phase=active] {
 			return out;
 		};
 
-		// 调用图视图状态缓存:按文件路径记住 缩放/滚动 位置,切页签回来不复位
+		// 调用图视图状态缓存:按文件路径记住 缩放/滚动 位置,切页签回来不复位。
+		// 设上限防止长会话内存膨胀:超出淘汰最久未用的视图状态
 		const graphViewCache = new Map(); // filePath -> { scale, fit, scrollLeft, scrollTop, baseW, baseH }
+		const GRAPH_VIEW_CACHE_MAX = 20;
 		// 调用图视图:工具栏(放大/缩小/复位/复制)+ 滚轮滚动窗口 +
 		// Ctrl/⌘+滚轮以鼠标为中心缩放 + 左键按住拖动平移(移动超过 4px 才算,
 		// 否则按点击派发给 SVG 节点跳转)。
@@ -1015,6 +1021,9 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 删除后执行,ref 已置 null,滚动位置会存成 0
 			react.useLayoutEffect(() => () => {
 				const vp = vpRef.current;
+				if (!graphViewCache.has(props.filePath) && graphViewCache.size >= GRAPH_VIEW_CACHE_MAX) {
+					graphViewCache.delete(graphViewCache.keys().next().value);
+				}
 				graphViewCache.set(props.filePath, {
 					scale: scaleRef.current,
 					fit: fitScaleRef.current,
@@ -1185,7 +1194,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const q = String(query || '');
 			if (!q) return [];
 			const needle = caseSensitive ? q : q.toLowerCase();
-			const lines = String(content || '').replace(/\r\n/g, '\n').split('\n').slice(0, maxLines);
+			const lines = contentLines(content).slice(0, maxLines);
 			const out = [];
 			const perLine = new Map();
 			for (let i = 0; i < lines.length; i++) {
@@ -1858,7 +1867,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!file || file.view !== 'preview' || !isMarkdown(file.name)) return null;
 				let text = file.content || '';
 				if (findState && findState.open && findMatches.length > 0) {
-					const lines = String(text).replace(/\r\n/g, '\n').split('\n');
+					const lines = contentLines(text);
 					text = markFindLines(lines, findMatches, findState.current || 0).join('\n');
 				}
 				return renderMarkdown(text);
@@ -1987,8 +1996,9 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 变量闪烁: { name, funcIndex, seq }
 			const [flash, setFlash] = react.useState(null);
 			const flashTimerRef = react.useRef(null);
-			// 解读项闪烁定时器(点击代码行时)
+			// 解读项闪烁定时器(点击代码行时) + 当前闪烁元素(新闪烁顶掉旧定时器时摘类)
 			const itemFlashTimerRef = react.useRef(null);
+			const itemFlashElRef = react.useRef(null);
 			// 跳转目标行闪烁: { line, seq }(Ctrl+点击跳转 / 历史导航)
 			const [jumpLine, setJumpLine] = react.useState(null);
 			const jumpLineTimerRef = react.useRef(null);
@@ -2018,7 +2028,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 否则工厂立即执行会踩 TDZ
 			const codeBuilt = react.useMemo(() => {
 				if (!file || file.reading || file.error || file.tooLarge || file.binary || file.view === 'preview') return null;
-				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
+				const lines = contentLines(file.content);
 				const shown = lines.slice(0, MAX_LINES);
 				let markedLines = shown;
 				// 查找命中占位(先于闪烁;闪烁的变量替换不会误伤占位符)。
@@ -2051,6 +2061,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				setJumpLine(null);
 				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
 				if (itemFlashTimerRef.current !== null) { clearTimeout(itemFlashTimerRef.current); itemFlashTimerRef.current = null }
+				itemFlashElRef.current = null;
 				if (jumpLineTimerRef.current !== null) { clearTimeout(jumpLineTimerRef.current); jumpLineTimerRef.current = null }
 				jumpHistoryRef.current = [];
 				jumpIndexRef.current = -1;
@@ -2113,6 +2124,10 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 进入工作区时恢复(含组件重挂载)。restore 声明在 save 之前:
 			// 挂载时先从缓存取回,再用当前状态写回,空状态不会覆盖旧缓存
 			const rootKey = rootPath || '';
+			// save 防呆:rootKey 变化(含重挂载)的那次渲染,页签状态仍是上一
+			// 工作区的,跳过本次保存;restore 落地后的重渲染再写回正确数据,
+			// 避免 A 工作区的页签瞬写进 B 的缓存槽
+			const rootKeyRef = react.useRef(null);
 			// 进入工作区(含重挂载):恢复该区的页签集合(首次访问为空)
 			react.useEffect(() => {
 				const saved = rootKey ? workspaceTabSets.get(rootKey) : null;
@@ -2131,6 +2146,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 页签集合变化:持续写回当前工作区的缓存
 			react.useEffect(() => {
 				if (!rootKey) return;
+				if (rootKeyRef.current !== rootKey) { rootKeyRef.current = rootKey; return }
 				workspaceTabSets.set(rootKey, {
 					tabs,
 					preview: previewFile,
@@ -2231,6 +2247,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			react.useEffect(() => () => {
 				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
 				if (itemFlashTimerRef.current !== null) clearTimeout(itemFlashTimerRef.current);
+				itemFlashElRef.current = null;
 				if (jumpLineTimerRef.current !== null) clearTimeout(jumpLineTimerRef.current);
 				if (statusTimerRef.current !== null) clearTimeout(statusTimerRef.current);
 			}, []);
@@ -2264,18 +2281,19 @@ html[data-cg-panel-open] [data-phase=active] {
 				window.addEventListener('keydown', onKey);
 				return () => window.removeEventListener('keydown', onKey);
 			}, [s.open, file]);
-			// Alt+←/→:跳转历史前进/后退(面板打开期间接管浏览器前进后退)
+			// Alt+←/→:跳转历史前进/后退。仅当确有历史且能移动时才接管,
+			// 空历史/已到边界放行浏览器前进后退键
 			react.useEffect(() => {
 				const onKey = (e) => {
 					if (!s.open) return;
 					if (!e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
-					e.preventDefault();
 					const arr = jumpHistoryRef.current;
 					if (arr.length === 0) return;
 					let idx = jumpIndexRef.current;
 					if (e.key === 'ArrowLeft') idx = Math.max(0, idx - 1);
 					else idx = Math.min(arr.length - 1, idx + 1);
 					if (idx === jumpIndexRef.current) return;
+					e.preventDefault();
 					const line = arr[idx];
 					jumpIndexRef.current = idx;
 					lastFocusRef.current = line;
@@ -2353,7 +2371,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const readInto = (entry) => {
 				// 图片/PDF 不走文本读取:内容由 /raw 字节流直接加载,读取态立即结束
 				if (isImageFile(entry.name) || isPdfFile(entry.name)) {
-					patchTab(entry.path, (f) => f ? { ...f, reading: false, image: true } : f);
+					patchTab(entry.path, (f) => f ? { ...f, reading: false } : f);
 					return;
 				}
 				api.read(entry.path, rootPath)
@@ -2639,7 +2657,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			// Python/JS/TS/Go(func,含 receiver)/Rust(fn) 等常见定义形式
 			const jumpTargetOf = (fn) => {
 				if (!file || !file.content) return fn.start;
-				const lines = String(file.content).replace(/\r\n/g, '\n').split('\n');
+				const lines = contentLines(file.content);
 				for (let k = fn.start; k <= Math.min(lines.length, fn.start + 20); k++) {
 					if (/^\s*(?:async\s+)?def\s/.test(lines[k - 1])
 						|| /^\s*(?:export\s+)?(?:async\s+)?function\s/.test(lines[k - 1])
@@ -2677,15 +2695,16 @@ html[data-cg-panel-open] [data-phase=active] {
 				// 定义形式:Python def/class · Go func(可带 receiver) · Rust fn ·
 				// JS/TS function/const/let/var · 赋值 name =
 				const defRe = new RegExp('(?:^|\\s)(?:def|class|fn)\\s+' + esc + '\\b|(?:^|\\s)func\\s+(?:\\([^)]*\\)\\s*)?' + esc + '\\b|(?:^|\\s)' + esc + '\\s*=|(?:^|\\s)(?:function|const|let|var)\\s+' + esc + '\\b');
-				const lines = String(file.content).replace(/\r\n/g, '\n').split('\n');
+				const lines = contentLines(file.content);
 				for (let i = 0; i < lines.length; i++) {
 					if (defRe.test(lines[i])) { navigateTo(i + 1, fromLine); return }
 				}
 			};
 
-			const onCardClick = (i, e) => {
-				// 点击的是变量名时,交给变量定位逻辑,不重复跳转函数
-				if (e.target.closest('.cg-var')) return;
+			// 点击主解读区(函数名 + 摘要):定位到对应代码行并高亮。
+			// 卡片其余区域(执行流程/留白)不跳转;执行流程里的变量名
+			// 由 onGuideClick 单独处理(定位变量首次出现处)
+			const onCardClick = (i) => {
 				setActive(i);
 				if (file && file.functions && file.functions[i]) navigateTo(jumpTargetOf(file.functions[i]));
 			};
@@ -2720,7 +2739,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const name = varEl.getAttribute('data-var') || '';
 				if (!name) return;
 				const fn = file.functions[idx];
-				const lines = String(file.content || '').replace(/\r\n/g, '\n').split('\n');
+				const lines = contentLines(file.content);
 				const hitLine = findVarLine(name, fn.start, Math.max(fn.end, fn.start), lines);
 				const seq = Date.now();
 				setActive(idx);
@@ -2744,41 +2763,51 @@ html[data-cg-panel-open] [data-phase=active] {
 				return null;
 			};
 
-			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 1.5 秒)
-			// 新数据:按模型给出的步骤行号范围精确命中;旧数据(无步骤行号):
-			// 标识符匹配流程步骤,匹配不到再按位置比例在步骤间选
+			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 1.5 秒)。
+			// 点击函数头区域(装饰器/签名/def 行,即函数名所在处)→ 主解读区
+			// (函数名 + 摘要)闪烁;行落在步骤行号范围内 → 对应步骤闪烁;
+			// 空隙行按标识符匹配/位置比例就近,都不中 → 主解读区。
+			// 新数据按模型给出的步骤行号范围精确命中;旧数据(无步骤行号)走标识符匹配
 			const flashGuideItem = (idx, lineNo) => {
 				const guideEl = guideRef.current;
 				const card = guideEl ? guideEl.querySelector('.cg-card[data-idx="' + idx + '"]') : null;
 				if (!card) return false;
 				const fn = file && file.functions ? file.functions[idx] : null;
+				const main = card.querySelector('.cg-card-main');
+				// 函数头区域 → 主解读区闪烁(点击函数名不再闪到某个流程步骤)
+				if (fn && lineNo >= fn.start && lineNo <= jumpTargetOf(fn)) {
+					flashItemEl(main);
+					return true;
+				}
 				const lis = card.querySelectorAll('.cg-card-flow-md li');
 				const steps = fn ? stepsOf(fn) : null;
 				let el = null;
 				if (steps) {
-					// 有行号范围的步骤:精确命中;行不在任何步骤内(如 def 行)→ 主介绍
+					// 有行号范围的步骤:精确命中
 					for (let j = 0; j < steps.length; j++) {
 						if (steps[j].start > 0 && steps[j].end >= steps[j].start && lineNo >= steps[j].start && lineNo <= steps[j].end) { el = lis[j] || null; break }
 					}
-					if (!el) {
-						// 行不在任何步骤内(空隙行):标识符匹配,匹配不到按位置比例选
-						const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
-						el = matchStepByTokens(lis, lines[lineNo - 1] || '');
-						if (!el && lis.length > 0) {
-							const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
-							el = lis[Math.min(lis.length - 1, Math.floor(ratio * lis.length))];
-						}
-						if (!el) el = card.querySelector('.cg-card-summary');
-					}
-				} else {
-					const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
+				}
+				if (!el) {
+					// 行不在任何步骤内(空隙行/旧数据):标识符匹配 → 位置比例就近 → 主解读区
+					const lines = file ? contentLines(file.content) : [];
 					el = matchStepByTokens(lis, lines[lineNo - 1] || '');
 					if (!el && lis.length > 0 && fn) {
 						const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
 						el = lis[Math.min(lis.length - 1, Math.floor(ratio * lis.length))];
 					}
-					if (!el) el = card.querySelector('.cg-card-summary');
+					if (!el) el = main;
 				}
+				flashItemEl(el);
+				return true;
+			};
+
+			// 解读项元素闪烁:摘旧类 → 强制回流重挂类触发动画。
+			// 定时器被新的闪烁顶掉时,旧元素靠 itemFlashElRef 引用摘类,不留残留
+			const flashItemEl = (el) => {
+				if (!el) return;
+				if (itemFlashElRef.current) itemFlashElRef.current.classList.remove('cg-item-flash');
+				itemFlashElRef.current = el;
 				el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 				el.classList.remove('cg-item-flash');
 				void el.offsetWidth;
@@ -2786,7 +2815,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (itemFlashTimerRef.current !== null) clearTimeout(itemFlashTimerRef.current);
 				itemFlashTimerRef.current = setTimeout(() => {
 					itemFlashTimerRef.current = null;
-					el.classList.remove('cg-item-flash');
+					if (itemFlashElRef.current) { itemFlashElRef.current.classList.remove('cg-item-flash'); itemFlashElRef.current = null }
 				}, 1500);
 			};
 
@@ -2807,6 +2836,13 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 				return charWidthCache;
 			};
+			// 窗口缩放/显示器 DPR 变化会改变字体度量:清掉缓存,下次测量重算,
+			// Ctrl+点击的列偏移换算才不失准
+			react.useEffect(() => {
+				const onWin = () => { charWidthCache = null };
+				window.addEventListener('resize', onWin);
+				return () => window.removeEventListener('resize', onWin);
+			}, []);
 			// 行号栏到代码文本起点的实际距离:动态测量(行号栏 sticky 不随横向
 			// 滚动,代码文本随滚动偏移,两者差值恒定,且不随字号/栏宽调整失效)
 			const gutterOf = (pane) => {
@@ -2831,7 +2867,7 @@ html[data-cg-panel-open] [data-phase=active] {
 					if (pane) {
 						const rect = pane.getBoundingClientRect();
 						const col = Math.floor((e.clientX - rect.left + pane.scrollLeft - gutterOf(pane)) / charWidth());
-						const lines = file && file.content ? String(file.content).replace(/\r\n/g, '\n').split('\n') : [];
+						const lines = file && file.content ? contentLines(file.content) : [];
 						const word = col >= 0 && lines[lineNo - 1] !== undefined ? wordAtCol(lines[lineNo - 1], col) : null;
 						if (word) { jumpToDef(word, lineNo); return }
 					}
@@ -3078,13 +3114,15 @@ html[data-cg-panel-open] [data-phase=active] {
 							key: i,
 							className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
 							'data-idx': i,
-							onClick: (e) => onCardClick(i, e),
 						},
-							react.createElement('div', { className: 'cg-card-head' },
-								react.createElement('span', { className: 'cg-card-name' }, f.name),
-								react.createElement('span', { className: 'cg-card-lines' }, f.end > f.start ? 'L' + f.start + ' – L' + f.end : 'L' + f.start),
+							// 主解读区 = 函数名 + 摘要:唯一可点击跳转代码的区域
+							react.createElement('div', { className: 'cg-card-main', onClick: () => onCardClick(i) },
+								react.createElement('div', { className: 'cg-card-head' },
+									react.createElement('span', { className: 'cg-card-name' }, f.name),
+									react.createElement('span', { className: 'cg-card-lines' }, f.end > f.start ? 'L' + f.start + ' – L' + f.end : 'L' + f.start),
+								),
+								react.createElement('div', { className: 'cg-card-summary' }, f.summary),
 							),
-							react.createElement('div', { className: 'cg-card-summary' }, f.summary),
 							steps || f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
 							steps
 								? react.createElement('div', { className: 'cg-card-flow-md' },
