@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-	id: "dsh-code-guide",
+	id: "dsh-files",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -47,7 +47,6 @@ html[data-cg-panel-open] [data-phase=active] {
   cursor: pointer; z-index: 6;
 }
 .cg-collapse-tab:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-brand-primary); }
-.cg-collapse-tab-on { background: var(--dsw-alias-brand-primary); color: #fff; border-color: var(--dsw-alias-brand-primary); }
 .cg-drag-capture {
   position: fixed; inset: 0; z-index: 9999; cursor: col-resize;
   background: transparent;
@@ -355,10 +354,10 @@ html[data-cg-panel-open] [data-phase=active] {
 
 		// ---------- fetch api ----------
 		const api = {
-			list: (path) => fetch('/plugins/code-guide/list?path=' + encodeURIComponent(path)).then((r) => r.json()),
-			search: (root, q) => fetch('/plugins/code-guide/search?root=' + encodeURIComponent(root) + '&q=' + encodeURIComponent(q)).then((r) => r.json()),
-			read: (path) => fetch('/plugins/code-guide/read?path=' + encodeURIComponent(path)).then((r) => r.json()),
-			explain: (path, refresh) => fetch('/plugins/code-guide/explain', {
+			list: (path) => fetch('/plugins/dsh-files/list?path=' + encodeURIComponent(path)).then((r) => r.json()),
+			search: (root, q) => fetch('/plugins/dsh-files/search?root=' + encodeURIComponent(root) + '&q=' + encodeURIComponent(q)).then((r) => r.json()),
+			read: (path) => fetch('/plugins/dsh-files/read?path=' + encodeURIComponent(path)).then((r) => r.json()),
+			explain: (path, refresh) => fetch('/plugins/dsh-files/explain', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ path, refresh: !!refresh }),
@@ -839,7 +838,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		const store = {
 			open: false,
 			width: DEFAULT_PANEL_W,
-			paneR: { code: 0.5, tree: 0.25 }, // 源码占主区比例、文件树占面板比例
+			paneR: { code: 0.5, tree: 0.32 }, // 源码占主区比例、文件树占面板比例(默认给足宽度)
 			query: '',
 			searching: false,
 			searchError: null,
@@ -862,7 +861,16 @@ html[data-cg-panel-open] [data-phase=active] {
 			const cr = Number(localStorage.getItem('cg-code-r'));
 			if (Number.isFinite(cr) && cr >= 0.05 && cr <= 0.95) store.paneR.code = cr;
 			const tr = Number(localStorage.getItem('cg-tree-r'));
-			if (Number.isFinite(tr) && tr >= 0.02 && tr <= 0.9) store.paneR.tree = tr;
+			if (Number.isFinite(tr) && tr >= 0.02 && tr <= 0.9) {
+				// 一次性迁移:文件树默认占比调大(0.25 → 0.32),旧的窄占比收回一次,
+				// 之后用户拖出来的宽度照常持久化
+				if (!localStorage.getItem('cg-tree-mig-320') && tr < 0.32) {
+					store.paneR.tree = 0.32;
+					localStorage.setItem('cg-tree-mig-320', '1');
+				} else {
+					store.paneR.tree = tr;
+				}
+			}
 		} catch (_) { /* localStorage 不可用时忽略 */ }
 		const emit = () => { for (const fn of Array.from(store.listeners)) fn() };
 		const subscribe = (fn) => { store.listeners.add(fn); return () => { store.listeners.delete(fn) } };
@@ -903,19 +911,20 @@ html[data-cg-panel-open] [data-phase=active] {
 		const setQuery = (value) => { store.query = String(value || ''); emit(); runSearch(store.query) };
 
 		// ---------- 面板/分栏尺寸 ----------
-		const PANEL_MIN_W = 420;      // 面板最小宽度(低于它的松手值回弹)
-		const PANEL_COLLAPSE_W = 280; // 拖到比这更窄(=拖向最右侧)→ 松手收起面板
-		const PANE_MIN_TREE = 150;
-		const PANE_MIN_CODE = 200;
-		const PANE_MIN_GUIDE = 200;
+		// 面板最小宽度 = 窗口宽度的 1/3(下限 420):整体视图拖到最右侧也不
+		// 能比这更窄,杜绝三视窗挤压重叠
+		const panelMinW = () => Math.max(420, Math.round(window.innerWidth / 3));
+		const panelMaxW = () => Math.max(panelMinW(), Math.min(window.innerWidth - 90, 2200));
 		const PANE_DIV_W = 5;
-		const panelMaxW = () => Math.max(PANEL_MIN_W, Math.min(window.innerWidth - 90, 2200));
+		// 三视窗最小阈值:面板最小宽度等分三份(扣除两条分栏线)
+		const paneMinOf = () => Math.max(100, Math.floor((panelMinW() - 2 * PANE_DIV_W) / 3));
 		// 由面板宽度 + 两个比例算出三个视窗的实际像素宽度:拖分栏线时实时
 		// 生效,整体调宽时按比例同步伸缩(和 VS Code/Cursor 侧栏行为一致)
 		const paneWidths = (panelW, paneR) => {
-			const treeW = Math.max(PANE_MIN_TREE, Math.min(Math.round(panelW * paneR.tree), Math.max(PANE_MIN_TREE, panelW - (PANE_MIN_CODE + PANE_MIN_GUIDE + PANE_DIV_W))));
+			const minP = paneMinOf();
+			const treeW = Math.max(minP, Math.min(Math.round(panelW * paneR.tree), Math.max(minP, panelW - (minP * 2 + PANE_DIV_W))));
 			const mainW = panelW - treeW - PANE_DIV_W;
-			const codeW = Math.max(PANE_MIN_CODE, Math.min(Math.round(mainW * paneR.code), mainW - PANE_MIN_GUIDE));
+			const codeW = Math.max(minP, Math.min(Math.round(mainW * paneR.code), mainW - minP));
 			return { treeW, mainW, codeW };
 		};
 
@@ -1299,16 +1308,14 @@ html[data-cg-panel-open] [data-phase=active] {
 			chevronRight: 'M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
 			close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
 			refresh: 'M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
-			sparkle: 'M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z',
 			reset: 'M12 5V2L7 6l5 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-6 8c0-1.65.62-3.16 1.63-4.29L6.22 7.3C4.85 8.74 4 10.76 4 13c0 4.08 3.05 7.44 7 7.93v-2.02C8.17 18.43 6 15.97 6 13z',
 			copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
 			check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
 			file: 'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z',
 			folder: 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
-			book: 'M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z',
+			sidebar: 'M3 15h8v-2H3v2zm0 4h8v-2H3v2zm0-8h8V9H3v2zm0-6v2h8V5H3zm10 0h8v14h-8V5z',
 			eye: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z',
 			eyeOff: 'M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z',
-			edit: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z',
 		};
 		const Icon = (props) => react.createElement('svg', {
 			width: props.size || 14,
@@ -1323,10 +1330,10 @@ html[data-cg-panel-open] [data-phase=active] {
 			const s = useStore();
 			return react.createElement('button', {
 				className: 'cg-toggle' + (s.open ? ' cg-toggle-on' : ''),
-				title: '代码陪读',
-				'aria-label': '代码陪读',
+				title: '文件',
+				'aria-label': '文件',
 				onClick: toggleOpen,
-			}, react.createElement(Icon, { name: 'book', size: 15 }));
+			}, react.createElement(Icon, { name: 'sidebar', size: 15 }));
 		};
 
 		// ---------- file tree ----------
@@ -1414,7 +1421,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 最新树镜像供轮询读取(避免闭包过期) + 轮询互斥标记
 			const treeRef = react.useRef(null);
 			const pollBusyRef = react.useRef(false);
-			// 操作状态提示(保存/刷新/VS Code),4s 自动消失
+			// 操作状态提示(自动刷新检测到文件变化等),4s 自动消失
 			const [status, setStatus] = react.useState(null);
 			const statusSeqRef = react.useRef(0);
 			// markdown 预览容器(注入后渲染 mermaid 占位)
@@ -1422,7 +1429,6 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
-			const cardRefs = react.useRef([]);
 
 			const without = (set, v) => { const n = new Set(set); n.delete(v); return n };
 			const withVal = (set, v) => { const n = new Set(set); n.add(v); return n };
@@ -1507,13 +1513,13 @@ html[data-cg-panel-open] [data-phase=active] {
 			react.useEffect(() => {
 				const root = document.documentElement;
 				// 内容避让量跟随面板实际显示宽度(窗口变小时不会多让)
-				root.style.setProperty('--cg-width', Math.min(s.width, panelMaxW()) + 'px');
+				root.style.setProperty('--cg-width', Math.max(panelMinW(), Math.min(s.width, panelMaxW())) + 'px');
 			}, [s.width]);
-			// 窗口变窄时把面板宽度收回上限内,避免面板超出屏幕
+			// 窗口变化时把面板宽度收进 [最小(1/3 屏宽), 最大] 区间
 			react.useEffect(() => {
 				const onWin = () => {
-					const maxW = panelMaxW();
-					if (store.width > maxW) { store.width = maxW; emit(); }
+					const w = Math.max(panelMinW(), Math.min(panelMaxW(), store.width));
+					if (w !== store.width) { store.width = w; emit(); }
 				};
 				window.addEventListener('resize', onWin);
 				return () => window.removeEventListener('resize', onWin);
@@ -1596,7 +1602,6 @@ html[data-cg-panel-open] [data-phase=active] {
 				jumpHistoryRef.current = [];
 				jumpIndexRef.current = -1;
 				lastFocusRef.current = null;
-				cardRefs.current = [];
 				// md/.mmd 默认进预览视图,其余进源码视图
 				setFile({ path: entry.path, name: entry.name, reading: true, explaining: false, view: (isMarkdown(entry.name) || isMermaidFile(entry.name)) ? 'preview' : 'code' });
 				// 点击文件只读源码、立刻显示;解读由用户点 ✨ 图标才触发
@@ -1749,7 +1754,6 @@ html[data-cg-panel-open] [data-phase=active] {
 				jumpHistoryRef.current = [];
 				jumpIndexRef.current = -1;
 				lastFocusRef.current = null;
-				cardRefs.current = [];
 			};
 
 			const lineFuncAt = (lineNo) => {
@@ -1989,14 +1993,15 @@ html[data-cg-panel-open] [data-phase=active] {
 			const onResizeMove = (e) => {
 				if (!drag) return;
 				if (drag.kind === 'outer') {
-					// drag the LEFT edge of a RIGHT panel: moving left widens it
-					store.width = Math.max(PANEL_COLLAPSE_W, Math.min(panelMaxW(), drag.startWidth + (drag.startX - e.clientX)));
+					// drag the LEFT edge of a RIGHT panel: moving left widens it;
+					// 最小收到窗口宽度的 1/3,不再允许继续往右挤压三视窗
+					store.width = Math.max(panelMinW(), Math.min(panelMaxW(), drag.startWidth + (drag.startX - e.clientX)));
 				} else if (drag.kind === 'code') {
-					const w = Math.max(PANE_MIN_CODE, Math.min(drag.startCodeW + (e.clientX - drag.startX), drag.startMainW - PANE_MIN_GUIDE));
+					const w = Math.max(paneMinOf(), Math.min(drag.startCodeW + (e.clientX - drag.startX), drag.startMainW - paneMinOf()));
 					store.paneR = { ...store.paneR, code: w / drag.startMainW };
 				} else if (drag.kind === 'tree') {
 					// 分栏线在文件树左侧:向左拖 → 文件树变宽
-					const w = Math.max(PANE_MIN_TREE, Math.min(drag.startTreeW - (e.clientX - drag.startX), Math.max(PANE_MIN_TREE, drag.startPanelW - (PANE_MIN_CODE + PANE_MIN_GUIDE + PANE_DIV_W))));
+					const w = Math.max(paneMinOf(), Math.min(drag.startTreeW - (e.clientX - drag.startX), Math.max(paneMinOf(), drag.startPanelW - (paneMinOf() * 2 + PANE_DIV_W))));
 					store.paneR = { ...store.paneR, tree: w / drag.startPanelW };
 				}
 				emit();
@@ -2004,13 +2009,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const endDrag = () => {
 				if (drag) {
 					if (drag.kind === 'outer') {
-						if (store.width <= PANEL_COLLAPSE_W) {
-							// 拖到最右侧 → 收起面板,并保留收起前的宽度供下次打开
-							setOpen(false);
-							store.width = drag.startWidth;
-						} else {
-							store.width = Math.max(PANEL_MIN_W, store.width);
-						}
+						store.width = Math.max(panelMinW(), store.width);
 					}
 					try {
 						localStorage.setItem('cg-panel-w', String(store.width));
@@ -2148,7 +2147,6 @@ html[data-cg-panel-open] [data-phase=active] {
 							key: i,
 							className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
 							'data-idx': i,
-							ref: (el) => { cardRefs.current[i] = el },
 							onClick: (e) => onCardClick(i, e),
 						},
 							react.createElement('div', { className: 'cg-card-head' },
@@ -2196,20 +2194,18 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			if (!s.open) return null;
-			// 拖动中且已过收起阈值:高亮收起把手,提示"松手收起"
-			const collapsing = !!drag && drag.kind === 'outer' && s.width <= PANEL_COLLAPSE_W;
 			const collapseTab = react.createElement('button', {
-				className: 'cg-collapse-tab' + (collapsing ? ' cg-collapse-tab-on' : ''),
-				title: collapsing ? '松开收起' : '收起代码陪读',
-				'aria-label': '收起代码陪读',
+				className: 'cg-collapse-tab',
+				title: '收起文件',
+				'aria-label': '收起文件',
 				onClick: () => setOpen(false),
 			}, react.createElement(Icon, { name: 'chevronRight', size: 14 }));
-			const widths = paneWidths(Math.min(s.width, panelMaxW()), s.paneR);
-			const panel = react.createElement('div', { className: 'cg-panel', style: { width: Math.min(s.width, panelMaxW()) + 'px' } },
+			const widths = paneWidths(Math.max(panelMinW(), Math.min(s.width, panelMaxW())), s.paneR);
+			const panel = react.createElement('div', { className: 'cg-panel', style: { width: Math.max(panelMinW(), Math.min(s.width, panelMaxW())) + 'px' } },
 				react.createElement('div', { className: 'cg-resize', title: '调整宽度', onPointerDown: onResizeStart }),
 				collapseTab,
 				react.createElement('div', { className: 'cg-header' },
-					react.createElement('span', { className: 'cg-title' }, '代码陪读'),
+					react.createElement('span', { className: 'cg-title' }, '文件'),
 					react.createElement('button', { className: 'cg-iconbtn', title: '全部展开 / 全部折叠', onClick: toggleAll }, react.createElement(Icon, { name: 'chevronDown', size: 14 })),
 					react.createElement('button', { className: 'cg-iconbtn', title: '刷新', onClick: refresh }, react.createElement(Icon, { name: 'refresh', size: 14 })),
 					react.createElement('button', {
@@ -2275,7 +2271,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const styleEl = document.createElement('style');
 			styleEl.textContent = CSS;
 			document.head.appendChild(styleEl);
-			ctx.effect(() => () => { styleEl.remove() }, 'code-guide: styles');
+			ctx.effect(() => () => { styleEl.remove() }, 'dsh-files: styles');
 
 			// 双击对话区收起面板(排除输入控件与可交互元素),与 file-explorer 行为一致
 			const onChatDblClick = (e) => {
@@ -2290,16 +2286,16 @@ html[data-cg-panel-open] [data-phase=active] {
 				setOpen(false);
 			};
 			document.addEventListener('dblclick', onChatDblClick);
-			ctx.effect(() => () => { document.removeEventListener('dblclick', onChatDblClick) }, 'code-guide: chat dblclick collapse');
+			ctx.effect(() => () => { document.removeEventListener('dblclick', onChatDblClick) }, 'dsh-files: chat dblclick collapse');
 
 			const slots = ctx.get('slots');
 			if (slots === undefined) return;
 			slots.inject('shell.overlay', () => slots.register(
-				{ name: 'shell.overlay', id: 'code-guide', order: 100, label: '代码陪读' },
+				{ name: 'shell.overlay', id: 'dsh-files', order: 100, label: '文件' },
 				(props) => react.createElement(GuidePanel, props),
 			));
 			slots.inject('conversation.session.header.utilities', () => slots.register(
-				{ name: 'conversation.session.header.utilities', id: 'code-guide-toggle', order: 20, label: '代码陪读' },
+				{ name: 'conversation.session.header.utilities', id: 'dsh-files-toggle', order: 20, label: '文件' },
 				(props) => react.createElement(ToggleButton, props),
 			));
 		}

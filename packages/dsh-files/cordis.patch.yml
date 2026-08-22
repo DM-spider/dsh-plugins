@@ -1,0 +1,13 @@
+# dsh-files bundle patch: mounts the files plugin into the host
+# composition of a dsh profile. The host half registers the
+# /plugins/dsh-files/* HTTP routes (list / read / search / explain); the web
+# client (dsh.client entry) renders the right-side files sidebar (tree,
+# search, preview, on-demand per-function AI explanations) in shell.overlay
+# plus a session-header toggle button.
+#
+# Install: `dsh plugin --profile <name> add <this package>` (npm or a local
+# path). The `dsh plugin` command pnpm-installs the package into the profile
+# and reconciles it into the profile's `dsh.profile.bundles` layer list.
+- insert:
+    - id: dsh-files
+      name: dsh-files

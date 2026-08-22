@@ -26,8 +26,8 @@ dsh-plugins/
 
 | 插件 | 类型 | 说明 | 上游 |
 |---|---|---|---|
-| [dsh-file-explorer](packages/dsh-file-explorer) | 修改版 | 文件资源管理器：Mermaid 渲染 / Material 文件图标 / 自动刷新 | [joejojoking-cloud/dsh-file-explorer](https://github.com/joejojoking-cloud/dsh-file-explorer)（MIT） |
-| [dsh-code-guide](packages/dsh-code-guide) | 自研 | 代码陪读：逐函数解读（作用/流转/公式）+ 联动跳转 + mermaid 调用图 | — |
+| [dsh-files](packages/dsh-files) | 自研 | 文件侧栏：文件树（搜索/类型图标/自动刷新）+ 代码/Markdown 预览 + 按需 AI 解读与调用图 | — |
+| [dsh-file-explorer](packages/dsh-file-explorer) | 修改版 | 已弃用（文件能力已并入 dsh-files），保留存档 | [joejojoking-cloud/dsh-file-explorer](https://github.com/joejojoking-cloud/dsh-file-explorer)（MIT） |
 
 > 新增插件后：在表格登记一行；若使用第三方内容，同步在 `NOTICE.md` 登记来源与许可。
 
