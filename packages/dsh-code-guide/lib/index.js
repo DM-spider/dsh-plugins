@@ -27,7 +27,6 @@ const MAX_EXPLAIN_BYTES = 1000000
 const SINGLE_CALL_MAX_LINES = 500
 const SINGLE_CALL_MAX_TOKENS = 24000
 const OUTLINE_WINDOW = 1200          // lines per outline call (small output each)
-const OUTLINE_CONCURRENCY = 3
 const EXPLAIN_WINDOW_SPAN = 400      // max line span per explanation call
 const EXPLAIN_CONCURRENCY = 3
 const OUTLINE_MAX_TOKENS = 8000
@@ -52,6 +51,7 @@ const SINGLE_PROMPT = [
   '- 如果代码里确实存在函数,严禁返回空数组;仔细逐段找,找到为止',
   '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 是该步骤对应的代码行范围(函数内、从小到大、不重叠);没有步骤则 flow 为空数组',
   '- flow 每一步都要带上真实变量名并用反引号包裹;严禁泛泛写"遍历列表"而不指明遍历哪个变量',
+  '- flow 中引用函数调用时,反引号只包裹函数名本身(如 `train_scorecards`),不要带参数和括号;参数如需说明,作为普通文本写在步骤里',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
   '- callEdges 只列代码里实际出现的调用关系,没有就为空数组',
 ].join('\n')
@@ -86,6 +86,7 @@ const EXPLAIN_PROMPT = [
   '- functions 与给出的清单一一对应:一个不能少、一个不能多,name 严格一致',
   '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 是该步骤对应的代码行范围(函数内、从小到大、不重叠);没有步骤则 flow 为空数组',
   '- flow 每一步都要带上真实变量名并用反引号包裹;严禁泛泛写"遍历列表"而不指明遍历哪个变量',
+  '- flow 中引用函数调用时,反引号只包裹函数名本身(如 `train_scorecards`),不要带参数和括号;参数如需说明,作为普通文本写在步骤里',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
   '- callEdges 只列本段代码里实际出现的调用关系,没有就为空数组',
 ].join('\n')
@@ -106,13 +107,7 @@ export function apply(ctx) {
     })
     res.end(JSON.stringify(obj))
   }
-  const param = (req, key) => {
-    try {
-      return new URL(req.url ?? '/', 'http://x').searchParams.get(key)
-    } catch {
-      return null
-    }
-  }
+  const param = (req, key) => new URL(req.url ?? '/', 'http://x').searchParams.get(key)
 
   // Resolve the model route for code explanations (memoized per process):
   // prefer the fast flash model (deepseek-official / deepseek-v4-flash) when
@@ -156,9 +151,8 @@ export function apply(ctx) {
   // One-shot model call through the resolved route. Consumes raw stream
   // chunks by hand so this bundle needs no runtime imports.
   const llmCall = async (system, userText, maxTokens, signal) => {
-    const llm = ctx.get('llm')
-    if (llm === undefined) throw new Error('llm 服务不可用')
     const route = await resolveRoute()
+    const llm = ctx.get('llm')
     const provider = route.provider
     const model = route.model
     let text = ''
@@ -196,6 +190,18 @@ export function apply(ctx) {
     const l = s.lastIndexOf('}')
     if (f >= 0 && l > f) s = s.slice(f, l + 1)
     return JSON.parse(s)
+  }
+
+  // callEdges → edgeSet 键(a\u0000b):只保留两端非空且互异的成对数组
+  const collectEdges = (parsed, edgeSet) => {
+    const edges = Array.isArray(parsed.callEdges) ? parsed.callEdges : []
+    for (const e of edges) {
+      if (Array.isArray(e) && e.length >= 2) {
+        const a = String(e[0]).trim()
+        const b = String(e[1]).trim()
+        if (a && b && a !== b) edgeSet.add(a + '\u0000' + b)
+      }
+    }
   }
 
   // Phase 1: function outline (name + absolute line range) for the whole
@@ -295,14 +301,7 @@ export function apply(ctx) {
               formula: String((f && f.formula) || ''),
             })
           }
-          const edges = Array.isArray(parsed.callEdges) ? parsed.callEdges : []
-          for (const e of edges) {
-            if (Array.isArray(e) && e.length >= 2) {
-              const a = String(e[0]).trim()
-              const b = String(e[1]).trim()
-              if (a && b && a !== b) edgeSet.add(a + '\u0000' + b)
-            }
-          }
+          collectEdges(parsed, edgeSet)
         } catch (err) {
           warnings.push('第 ' + from + ' 行起的一组函数解读失败: ' + message(err))
         }
@@ -356,14 +355,7 @@ export function apply(ctx) {
     // through — treat it as a failure so the caller falls back / warns.
     if (functions.length === 0) throw new Error('模型未识别到任何函数')
     const edgeSet = new Set()
-    const edges = Array.isArray(parsed.callEdges) ? parsed.callEdges : []
-    for (const e of edges) {
-      if (Array.isArray(e) && e.length >= 2) {
-        const a = String(e[0]).trim()
-        const b = String(e[1]).trim()
-        if (a && b && a !== b) edgeSet.add(a + '\u0000' + b)
-      }
-    }
+    collectEdges(parsed, edgeSet)
     return {
       functions,
       edgeSet,
@@ -396,8 +388,7 @@ export function apply(ctx) {
     if (names.length < 2) return edges
     const regexes = new Map()
     for (const n of names) {
-      const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      try { regexes.set(n, new RegExp('(?<![A-Za-z0-9_$])' + esc + '\\s*\\(', 'm')) } catch { /* skip */ }
+      regexes.set(n, new RegExp('(?<![A-Za-z0-9_$])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\('))
     }
     // 函数体范围用"本函数起始行 → 下一函数起始行"精确定界(起始行已用
     // 签名修正),最后一个函数延伸到文件末尾,不依赖模型猜的结束行
@@ -563,10 +554,7 @@ export function apply(ctx) {
   // walked in model order with a moving cursor, so anchors stay monotonic).
   // Step range = [anchor_i, anchor_{i+1} - 1], last step extends to fn end.
   const anchorFlowSteps = (functions, lines) => {
-    const tokenRe = (tok) => {
-      const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      try { return new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])') } catch { return null }
-    }
+    const tokenRe = (tok) => new RegExp('(?<![A-Za-z0-9_$])' + tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])')
     const tokensOf = (text) => {
       const out = []
       const re = /`([^`]+)`/g
@@ -591,7 +579,6 @@ export function apply(ctx) {
         let anchor = -1
         for (const tok of toks) {
           const re = tokenRe(tok)
-          if (!re) continue
           for (let i = cursor - f.start; i < body.length; i++) {
             if (re.test(body[i])) { anchor = f.start + i; break }
           }

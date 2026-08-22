@@ -127,7 +127,7 @@ html[data-cg-panel-open] [data-phase=active] {
 }
 .cg-card:hover { border-color: var(--dsw-alias-brand-primary); }
 .cg-card-on { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
-.cg-item-flash { animation: cg-card-flash 1s ease-out 1; }
+.cg-item-flash { animation: cg-card-flash 1.5s ease-out 1; }
 @keyframes cg-card-flash {
   0% { background: rgba(59, 130, 246, .28); border-color: var(--dsw-alias-brand-primary); }
   100% { background: transparent; }
@@ -157,7 +157,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-var-hit {
   background-color: rgba(59, 130, 246, .18);
   border-radius: 2px; padding: 0 1px;
-  animation: cg-flash .45s ease-in-out 1;
+  animation: cg-flash 1.5s ease-in-out 1;
 }
 @keyframes cg-flash {
   0% { background-color: rgba(59, 130, 246, .95); color: #fff; }
@@ -474,7 +474,6 @@ html[data-cg-panel-open] [data-phase=active] {
 		const iconPaths = {
 			chevronDown: 'M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z',
 			chevronRight: 'M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
-			chevronLeft: 'M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z',
 			close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
 			refresh: 'M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
 			file: 'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z',
@@ -630,6 +629,17 @@ html[data-cg-panel-open] [data-phase=active] {
 				});
 			};
 
+			const applyExplainResult = (path, res) => {
+				setFile((f) => {
+					if (!f || f.path !== path) return f;
+					if (res && res.error) return { ...f, explaining: false, explainError: res.error };
+					return { ...f, explaining: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], chunks: res.chunks || 0 };
+				});
+			};
+			const failExplain = (path, err) => {
+				setFile((f) => f && f.path === path ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
+			};
+
 			const openFile = (entry) => {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				setActive(null);
@@ -649,29 +659,13 @@ html[data-cg-panel-open] [data-phase=active] {
 				}).catch((err) => {
 					setFile((f) => f && f.path === entry.path ? { ...f, reading: false, error: String((err && err.message) || err) } : f);
 				});
-				api.explain(entry.path, false).then((res) => {
-					setFile((f) => {
-						if (!f || f.path !== entry.path) return f;
-						if (res && res.error) return { ...f, explaining: false, explainError: res.error };
-						return { ...f, explaining: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], chunks: res.chunks || 0 };
-					});
-				}).catch((err) => {
-					setFile((f) => f && f.path === entry.path ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
-				});
+				api.explain(entry.path, false).then((res) => applyExplainResult(entry.path, res)).catch((err) => failExplain(entry.path, err));
 			};
 
 			const reExplain = () => {
 				if (!file || file.explaining) return;
 				setFile((f) => ({ ...f, explaining: true, explainError: null, warnings: [] }));
-				api.explain(file.path, true).then((res) => {
-					setFile((f) => {
-						if (!f || f.path !== file.path) return f;
-						if (res && res.error) return { ...f, explaining: false, explainError: res.error };
-						return { ...f, explaining: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], chunks: res.chunks || 0 };
-					});
-				}).catch((err) => {
-					setFile((f) => f && f.path === file.path ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
-				});
+				api.explain(file.path, true).then((res) => applyExplainResult(file.path, res)).catch((err) => failExplain(file.path, err));
 			};
 
 			const lineFuncAt = (lineNo) => {
@@ -691,16 +685,9 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (el) pane.scrollTo({ top: el.offsetTop - pane.clientHeight * 0.2 });
 			};
 
-			const jumpToCard = (i) => {
-				const el = cardRefs.current[i];
-				if (el && guideRef.current) {
-					el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-				}
-			};
-
 			const onCardClick = (i, e) => {
 				// 点击的是变量名时,交给变量定位逻辑,不重复跳转函数
-				if (e && e.target && typeof e.target.closest === 'function' && e.target.closest('.cg-var')) return;
+				if (e.target.closest('.cg-var')) return;
 				setActive(i);
 				if (file && file.functions && file.functions[i]) jumpToLine(file.functions[i].start);
 			};
@@ -708,10 +695,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 多级回退搜索变量出现行:函数范围内精确匹配 → 函数范围内首标识符 →
 			// 全文件精确匹配 → 全文件首标识符。保证尽量跳转到
 			const findVarLine = (name, start, end, lines) => {
-				const mkRe = (p) => {
-					const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-					try { return new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])') } catch { return null }
-				};
+				const mkRe = (p) => new RegExp('(?<![A-Za-z0-9_$])' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])');
 				const tokenM = /^[A-Za-z_$][\w$]*/.exec(name);
 				const candidates = [name];
 				if (tokenM && tokenM[0] !== name) candidates.push(tokenM[0]);
@@ -719,7 +703,6 @@ html[data-cg-panel-open] [data-phase=active] {
 				for (const range of ranges) {
 					for (const c of candidates) {
 						const re = mkRe(c);
-						if (!re) continue;
 						for (let i = range[0]; i <= Math.min(range[1], lines.length); i++) {
 							if (re.test(lines[i - 1])) return i;
 						}
@@ -730,8 +713,7 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			// 点击解读中的变量名:定位到首次出现处并闪烁全部出现位置
 			const onGuideClick = (e) => {
-				const t = e && e.target;
-				if (!t || typeof t.closest !== 'function') return;
+				const t = e.target;
 				const varEl = t.closest('.cg-var');
 				if (!varEl) return;
 				const cardEl = t.closest('.cg-card');
@@ -750,10 +732,21 @@ html[data-cg-panel-open] [data-phase=active] {
 				flashTimerRef.current = setTimeout(() => {
 					flashTimerRef.current = null;
 					setFlash((f) => (f && f.seq === seq ? null : f));
-				}, 1000);
+				}, 1500);
 			};
 
-			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 1 秒)
+			// 按代码行标识符匹配解读项:行 token 与解读项反引号变量有交集即命中
+			const matchStepByTokens = (lis, lineText) => {
+				const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
+				if (tokens.length === 0) return null;
+				for (const li of lis) {
+					const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
+					if (vars.some((v) => tokens.indexOf(v) >= 0)) return li;
+				}
+				return null;
+			};
+
+			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 1.5 秒)
 			// 新数据:按模型给出的步骤行号范围精确命中;旧数据(无步骤行号):
 			// 标识符匹配流程步骤,匹配不到再按位置比例在步骤间选
 			const flashGuideItem = (idx, lineNo) => {
@@ -770,16 +763,9 @@ html[data-cg-panel-open] [data-phase=active] {
 						if (steps[j].start > 0 && steps[j].end >= steps[j].start && lineNo >= steps[j].start && lineNo <= steps[j].end) { el = lis[j] || null; break }
 					}
 					if (!el) {
-						// 步骤无行号范围:标识符匹配;匹配不到按位置比例选
+						// 行不在任何步骤内(空隙行):标识符匹配,匹配不到按位置比例选
 						const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
-						const lineText = lines[lineNo - 1] || '';
-						const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
-						if (tokens.length > 0) {
-							for (const li of lis) {
-								const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
-								if (vars.some((v) => tokens.indexOf(v) >= 0)) { el = li; break }
-							}
-						}
+						el = matchStepByTokens(lis, lines[lineNo - 1] || '');
 						if (!el && lis.length > 0) {
 							const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
 							el = lis[Math.min(lis.length - 1, Math.floor(ratio * lis.length))];
@@ -788,21 +774,13 @@ html[data-cg-panel-open] [data-phase=active] {
 					}
 				} else {
 					const lines = file ? String(file.content || '').replace(/\r\n/g, '\n').split('\n') : [];
-					const lineText = lines[lineNo - 1] || '';
-					const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
-					if (tokens.length > 0 && lis.length > 0) {
-						for (const li of lis) {
-							const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
-							if (vars.some((v) => tokens.indexOf(v) >= 0)) { el = li; break }
-						}
-					}
+					el = matchStepByTokens(lis, lines[lineNo - 1] || '');
 					if (!el && lis.length > 0 && fn) {
 						const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
 						el = lis[Math.min(lis.length - 1, Math.floor(ratio * lis.length))];
 					}
 					if (!el) el = card.querySelector('.cg-card-summary');
 				}
-				if (!el) el = card;
 				el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 				el.classList.remove('cg-item-flash');
 				void el.offsetWidth;
@@ -811,7 +789,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				itemFlashTimerRef.current = setTimeout(() => {
 					itemFlashTimerRef.current = null;
 					el.classList.remove('cg-item-flash');
-				}, 1000);
+				}, 1500);
 			};
 
 			const onLineClick = (lineNo) => {
@@ -870,12 +848,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const truncated = lines.length > MAX_LINES;
 				const shown = lines.slice(0, MAX_LINES);
 				const flashFn = flash && file && file.functions ? file.functions[flash.funcIndex] : null;
-				const flashRe = flashFn
-					? (() => {
-						const esc = flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-						try { return new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])', 'g') } catch { return null }
-					})()
-					: null;
+				const flashRe = flashFn ? new RegExp('(?<![A-Za-z0-9_$])' + flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])', 'g') : null;
 				const els = [];
 				for (let i = 0; i < shown.length; i++) {
 					const lineNo = i + 1;
@@ -891,7 +864,6 @@ html[data-cg-panel-open] [data-phase=active] {
 							if (m.index > last) parts.push(shown[i].slice(last, m.index));
 							parts.push(react.createElement('mark', { key: 'm' + k++, className: 'cg-var-hit' }, m[0]));
 							last = m.index + m[0].length;
-							if (m[0].length === 0) flashRe.lastIndex++;
 						}
 						parts.push(shown[i].slice(last));
 						codeEl = react.createElement('span', { className: 'cg-code-text' }, ...parts);
