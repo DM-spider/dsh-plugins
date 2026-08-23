@@ -1,7 +1,7 @@
 {
-  "name": "dsh-theme-onedarkpro",
-  "version": "0.1.0",
-  "description": "One Dark Pro theme for DeepSeek Harness: stacks the One Dark Pro palette (VS Code One Dark Pro reference) over the dark scheme of the --dsw-* token sheets via the theme service override layer; the light scheme and the appearance preference stay untouched",
+  "name": "dsh-themes",
+  "version": "0.2.0",
+  "description": "Editor-style dark themes for DeepSeek Harness: One Dark Pro and PyCharm Dark palettes stacked over the dark scheme of the --dsw-* token sheets via the theme service override layer, with a settings row switcher; the light scheme and the appearance preference stay untouched",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

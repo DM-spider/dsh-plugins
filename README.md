@@ -27,7 +27,7 @@ dsh-plugins/
 | 插件 | 类型 | 说明 | 上游 |
 |---|---|---|---|
 | [dsh-files](packages/dsh-files) | 自研 | 文件侧栏：文件树（搜索/类型图标/自动刷新）+ 代码/Markdown 预览 + 按需 AI 解读与调用图 | — |
-| [dsh-theme-onedarkpro](packages/dsh-theme-onedarkpro) | 自研 | One Dark Pro 深色主题：把 One Dark Pro 配色叠加到 DSH 深色档（浅色档与外观偏好不受影响） | 配色参考 [OneDark-Pro](https://github.com/Binaryify/OneDark-Pro)（仅色值，无代码） |
+| [dsh-themes](packages/dsh-themes) | 自研 | 编辑器风格深色主题：One Dark Pro / PyCharm Dark 两套配色叠加到 DSH 深色档，设置页「主题」行切换（浅色档与外观偏好不受影响） | 配色参考 [OneDark-Pro](https://github.com/Binaryify/OneDark-Pro) 与 [nicohlr.pycharm](https://marketplace.visualstudio.com/items?itemName=nicohlr.pycharm)（仅色值，无代码） |
 | [dsh-file-explorer](packages/dsh-file-explorer) | 修改版 | 已弃用（文件能力已并入 dsh-files），保留存档 | [joejojoking-cloud/dsh-file-explorer](https://github.com/joejojoking-cloud/dsh-file-explorer)（MIT） |
 
 > 新增插件后：在表格登记一行；若使用第三方内容，同步在 `NOTICE.md` 登记来源与许可。
