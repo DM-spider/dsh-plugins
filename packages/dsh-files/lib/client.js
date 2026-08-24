@@ -219,13 +219,12 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-var { cursor: pointer; }
 .cg-var:hover { text-decoration: underline; }
 .cg-var-hit {
-  background-color: rgba(59, 130, 246, .18);
   border-radius: 2px; padding: 0 1px;
-  animation: cg-flash 2s ease-in-out 1;
+  animation: cg-flash 2s ease-in-out 1 both;
 }
 @keyframes cg-flash {
   0% { background-color: rgba(59, 130, 246, .95); color: #fff; }
-  100% { background-color: rgba(59, 130, 246, .18); }
+  100% { background-color: transparent; color: inherit; }
 }
 /* 文件内搜索命中高亮:普通命中黄、当前命中橙 */
 .cg-find-hit {
