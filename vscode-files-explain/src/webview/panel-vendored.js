@@ -167,7 +167,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-hl .cg-tok-d { color: var(--cg-hl-directive, #c678dd); }
 .cg-line-hi { background: var(--dsw-alias-interactive-bg-hover); }
 .cg-line-hi .cg-ln { color: var(--dsw-alias-brand-primary); font-weight: 700; }
-.cg-line-jump { animation: cg-line-jump 1.5s ease-out 1; }
+.cg-line-jump { animation: cg-line-jump 2s ease-out 1; }
 @keyframes cg-line-jump {
   0% { background: rgba(59, 130, 246, .45); }
   100% { background: transparent; }
@@ -191,7 +191,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-card-main { cursor: pointer; border-radius: 6px; }
 .cg-card-main:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .cg-card-on { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
-.cg-item-flash { animation: cg-card-flash 1.5s ease-out 1; }
+.cg-item-flash { animation: cg-card-flash 2s ease-out 1; }
 @keyframes cg-card-flash {
   0% { background: rgba(59, 130, 246, .28); border-color: var(--dsw-alias-brand-primary); }
   100% { background: transparent; }
@@ -221,7 +221,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-var-hit {
   background-color: rgba(59, 130, 246, .18);
   border-radius: 2px; padding: 0 1px;
-  animation: cg-flash 1.5s ease-in-out 1;
+  animation: cg-flash 2s ease-in-out 1;
 }
 @keyframes cg-flash {
   0% { background-color: rgba(59, 130, 246, .95); color: #fff; }
@@ -1878,20 +1878,35 @@ html[data-cg-panel-open] [data-phase=active] {
 				return mdParsed.headings.map((h, i) => ({ key: 'h' + i, id: h.id, name: h.text, kind: 'H' + h.level }));
 			}, [file && file.path, file && file.view, mdParsed]);
 			// 命中列表/当前命中变化时跟随滚动:代码视图按行号数学定位;
-			// md 预览按渲染后的 <mark class="cg-find-cur"> 元素定位
+			// md 预览按渲染后的 <mark class="cg-find-cur"> 元素定位。
+			// 「视图键」= 活动页签 + 预览态:键变化 = 页签/预览切换,跳过
+			// 跟随(阅读位置交给页签恢复逻辑);同一视图内命中/当前命中
+			// 变化才跟随。以视图键而非文件路径判定,同名文件的
+			// 「预览页签 ↔ 固定页签」切换也能正确跳过
+			const lastFindFollowViewRef = react.useRef(null);
 			react.useEffect(() => {
-				if (!findState || !findState.open || findMatches.length === 0) return;
-				const i = Math.min(Math.max(findState.current || 0, 0), findMatches.length - 1);
-				if (file && file.view === 'preview' && isMarkdown(file.name)) {
-					const container = mdRef.current;
-					if (container) {
-						const el = container.querySelector('mark.cg-find-cur');
-						if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-					}
+				// viewKey 必须先算先存:切到的视图没有 find state/命中时提前
+				// 返回,若不更新 ref,ref 里残留旧视图键,切回原视图时守卫
+				// 误判"没离开过"而错误跟随
+				const viewKey = (activePath || '') + (previewActive ? '#pv' : '#tab');
+				if (!findState || !findState.open || findMatches.length === 0) {
+					lastFindFollowViewRef.current = viewKey;
 					return;
 				}
-				jumpToLine(findMatches[i].line);
-			}, [findMatches, findState && findState.current]);
+				if (lastFindFollowViewRef.current === viewKey) {
+					const i = Math.min(Math.max(findState.current || 0, 0), findMatches.length - 1);
+					if (file && file.view === 'preview' && isMarkdown(file.name)) {
+						const container = mdRef.current;
+						if (container) {
+							const el = container.querySelector('mark.cg-find-cur');
+							if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+						}
+						return;
+					}
+					jumpToLine(findMatches[i].line);
+				}
+				lastFindFollowViewRef.current = viewKey;
+			}, [findMatches, findState && findState.current, activePath, previewActive]);
 			// 按路径更新指定页签或预览对象(解读结果/读取完成等异步回调带
 			// path 守卫);updater 返回 null/false 表示删除
 			const patchTab = (path, updater) => {
@@ -2297,8 +2312,7 @@ html[data-cg-panel-open] [data-phase=active] {
 					const line = arr[idx];
 					jumpIndexRef.current = idx;
 					lastFocusRef.current = line;
-					jumpToLine(line);
-					flashJumpLine(line);
+					jumpToLine(line, () => flashJumpLine(line));
 				};
 				window.addEventListener('keydown', onKey, true);
 				return () => window.removeEventListener('keydown', onKey, true);
@@ -2392,6 +2406,10 @@ html[data-cg-panel-open] [data-phase=active] {
 					switchTo(entry.path);
 					return;
 				}
+				// 保存被替换视图(固定页签或预览)的阅读位置:与 switchTo 对齐。
+				// 此前这里漏保存——从树里双击打开新文件时,旧视图的滚动位置
+				// 直接丢失,切回来只能恢复旧值(初始位置)
+				saveScroll();
 				const pv = previewRef.current;
 				// 预览转正:对象(含解读结果)整体进页签,原位斜体变正体;
 				// reading 中也可转正(双击树文件时第一次单击刚建预览,双击到达时
@@ -2431,6 +2449,9 @@ html[data-cg-panel-open] [data-phase=active] {
 					switchToPreview();
 					return;
 				}
+				// 新预览覆盖当前视图(固定页签或旧预览)前,保存其阅读位置。
+				// 此前这里同样漏保存:切回原页签只能恢复旧值(初始位置)
+				saveScroll();
 				resetFocusState();
 				const next = { path: entry.path, name: entry.name, root: rootPath, reading: true, explaining: false, view: (isMarkdown(entry.name) || isMermaidFile(entry.name) || isImageFile(entry.name) || isPdfFile(entry.name)) ? 'preview' : 'code' };
 				previewRef.current = next;
@@ -2626,15 +2647,33 @@ html[data-cg-panel-open] [data-phase=active] {
 				return null;
 			};
 
-			const jumpToLine = (start) => {
+			// 行号→滚动位置,平滑滑动到位(与解读板块 scrollIntoView smooth 一致)。
+			// 虚拟滚动下目标行可能尚未渲染,不能靠 DOM 找元素,只能数学换算。
+			// onArrive:目标行进入可视区(滑动到位)后回调,闪烁不提前开始
+			const jumpToLine = (start, onArrive) => {
 				const pane = codePaneRef.current;
-				if (!pane) return;
-				// 虚拟滚动下行号→位置用纯数学换算(目标行可能尚未渲染,
-				// 不能再靠 querySelectorAll('.cg-line') 找元素)
-				pane.scrollTop = Math.max(0, (start - 1) * LINE_H - Math.floor(pane.clientHeight * 0.2));
+				if (!pane) { if (onArrive) onArrive(); return }
+				const top = Math.max(0, (start - 1) * LINE_H - Math.floor(pane.clientHeight * 0.2));
+				if (typeof pane.scrollTo === 'function') {
+					pane.scrollTo({ top, behavior: 'smooth' });
+					if (onArrive) {
+						// 长距离滑动期间轮询:行一进可视区立刻闪烁;异常情况下
+						// 最多等 3s 强制触发,不留永远不闪的死角
+						let guard = 0;
+						const check = () => {
+							if (lineVisibleInPane(start)) { onArrive(); return }
+							if (guard++ < 60) setTimeout(check, 50);
+							else onArrive();
+						};
+						setTimeout(check, 50);
+					}
+				} else {
+					pane.scrollTop = top;
+					if (onArrive) onArrive();
+				}
 			};
 
-			// 目标行闪烁 1.5s(跳转定位反馈)
+			// 目标行闪烁 2s(跳转定位反馈)
 			const flashJumpLine = (line) => {
 				const seq = Date.now();
 				setJumpLine({ line, seq });
@@ -2642,7 +2681,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				jumpLineTimerRef.current = setTimeout(() => {
 					jumpLineTimerRef.current = null;
 					setJumpLine((j) => (j && j.seq === seq ? null : j));
-				}, 1500);
+				}, 2000);
 			};
 			// 当前滚动位置折算行号(动态取实际行高,字号调整后依然准确)
 			const currentLineOf = () => {
@@ -2667,10 +2706,22 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 				return fn.start;
 			};
+			// 目标行是否完整落在代码窗可视区内(纯数学换算,虚拟滚动未渲染的
+			// 行也能判)。解读侧点击用它决定"只闪烁不滚动":用户正在看这段
+			// 代码时,点击解读项不应把视图拖走
+			const lineVisibleInPane = (lineNo) => {
+				const pane = codePaneRef.current;
+				if (!pane) return false;
+				// 整行可见:行顶在 pane 顶之下、行底在 pane 底之上
+				const topVis = Math.ceil(1 + pane.scrollTop / LINE_H);
+				const bottomVis = Math.floor((pane.scrollTop + pane.clientHeight) / LINE_H);
+				return lineNo >= topVis && lineNo <= bottomVis;
+			};
 			// 所有跳转统一入口(当前文件内):记录出发点+落点入历史栈 →
 			// 滚动定位 → 目标行闪烁。出发点优先取"最近交互行"
-			// (用户实际点击的那行),没有才用滚动位置折算
-			const navigateTo = (line, from) => {
+			// (用户实际点击的那行),没有才用滚动位置折算。soft 模式(解读侧
+			// 点击)下目标行已在可视区内则跳过滚动,只闪烁
+			const navigateTo = (line, from, soft) => {
 				const arr = jumpHistoryRef.current;
 				const idx = jumpIndexRef.current;
 				const origin = from !== undefined && from !== null
@@ -2681,8 +2732,10 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (arr[arr.length - 1] !== line) arr.push(line);
 				jumpIndexRef.current = arr.length - 1;
 				lastFocusRef.current = line;
-				jumpToLine(line);
-				flashJumpLine(line);
+				// 平滑滑到位后再闪烁(滑动途中目标行尚未渲染,提前闪烁会被吃掉);
+				// 已在可视区内则直接闪
+				if (!(soft && lineVisibleInPane(line))) jumpToLine(line, () => flashJumpLine(line));
+				else flashJumpLine(line);
 			};
 			// Ctrl+点击标识符 → 跳转到其定义(当前文件内):优先用已解析的函数表
 			// (签名已校正),否则正则回退 def/class/function/const 等定义行
@@ -2706,7 +2759,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 由 onGuideClick 单独处理(定位变量首次出现处)
 			const onCardClick = (i) => {
 				setActive(i);
-				if (file && file.functions && file.functions[i]) navigateTo(jumpTargetOf(file.functions[i]));
+				if (file && file.functions && file.functions[i]) navigateTo(jumpTargetOf(file.functions[i]), undefined, true);
 			};
 
 			// 多级回退搜索变量出现行:函数范围内精确匹配 → 函数范围内首标识符 →
@@ -2744,12 +2797,12 @@ html[data-cg-panel-open] [data-phase=active] {
 				const seq = Date.now();
 				setActive(idx);
 				setFlash({ name, funcIndex: idx, seq });
-				if (hitLine > 0) navigateTo(hitLine);
+				if (hitLine > 0) navigateTo(hitLine, undefined, true);
 				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
 				flashTimerRef.current = setTimeout(() => {
 					flashTimerRef.current = null;
 					setFlash((f) => (f && f.seq === seq ? null : f));
-				}, 1500);
+				}, 2000);
 			};
 
 			// 按代码行标识符匹配解读项:行 token 与解读项反引号变量有交集即命中
@@ -2763,7 +2816,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				return null;
 			};
 
-			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 1.5 秒)。
+			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 2 秒)。
 			// 点击函数头区域(装饰器/签名/def 行,即函数名所在处)→ 主解读区
 			// (函数名 + 摘要)闪烁;行落在步骤行号范围内 → 对应步骤闪烁;
 			// 空隙行按标识符匹配/位置比例就近,都不中 → 主解读区。
@@ -2816,7 +2869,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				itemFlashTimerRef.current = setTimeout(() => {
 					itemFlashTimerRef.current = null;
 					if (itemFlashElRef.current) { itemFlashElRef.current.classList.remove('cg-item-flash'); itemFlashElRef.current = null }
-				}, 1500);
+				}, 2000);
 			};
 
 			// 等宽字体字符宽度(把点击横坐标折算成行内字符偏移)
