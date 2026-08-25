@@ -1241,9 +1241,16 @@ html[data-cg-panel-open] [data-phase=active] {
 		const subscribe = (fn) => { store.listeners.add(fn); return () => { store.listeners.delete(fn) } };
 		const setOpen = (value) => { store.open = !!value; emit() };
 		const toggleOpen = () => setOpen(!store.open);
-		const useStore = () => {
+		const useStore = (selector) => {
+			const sel = selector || null;
+			const snapRef = react.useRef(sel ? sel(store) : store);
 			const [, setTick] = react.useState(0);
-			react.useEffect(() => subscribe(() => setTick((x) => x + 1)), []);
+			react.useEffect(() => subscribe(() => {
+				if (!sel) { setTick((x) => x + 1); return }
+				const next = sel(store);
+				if (next !== snapRef.current) { snapRef.current = next; setTick((x) => x + 1) }
+			}), []);
+			if (sel) { snapRef.current = sel(store); return snapRef.current }
 			return store;
 		};
 		// 每个工作区各自的页签集合。必须放模块级:切换会话时面板组件可能
@@ -1642,18 +1649,14 @@ html[data-cg-panel-open] [data-phase=active] {
 			}
 			return html;
 		};
-		// 高亮 HTML 按行切分:逐行补齐跨行 span 的闭合与重开,
-		// 保证多行注释/字符串的颜色连续,且每一行都是独立可渲染片段
 		const splitHighlighted = (html) => {
 			const out = [];
 			const stack = [];
 			const tagRe = /<\/?span( class="[^"]*")?>/g;
 			for (const raw of html.split('\n')) {
-				// 行首栈 → 前缀重开跨行 span
 				const startStack = stack.slice();
 				let prefix = '';
 				for (const cls of startStack) prefix += '<span class="' + cls + '">';
-				// 按顺序处理本行标签,更新栈
 				tagRe.lastIndex = 0;
 				let m;
 				while ((m = tagRe.exec(raw)) !== null) {
@@ -1664,12 +1667,15 @@ html[data-cg-panel-open] [data-phase=active] {
 						stack.push(cm ? cm[1] : '');
 					}
 				}
-				// 行尾栈 → 后缀闭合,保证每行独立平衡
 				let suffix = '';
 				for (let i = stack.length - 1; i >= 0; i--) suffix += '</span>';
 				out.push(prefix + raw + suffix);
 			}
 			return out;
+		};
+		const highlightLines = (text, lang) => {
+			const html = highlight(text, lang);
+			return splitHighlighted(html);
 		};
 
 		// [MATERIAL_ICONS_BEGIN]
@@ -1813,10 +1819,11 @@ html[data-cg-panel-open] [data-phase=active] {
 		}, react.createElement('path', { d: iconPaths[props.name] }));
 
 		// ---------- header toggle ----------
+		const selectOpen = (s) => s.open;
 		const ToggleButton = () => {
-			const s = useStore();
+			const open = useStore(selectOpen);
 			return react.createElement('button', {
-				className: 'cg-toggle' + (s.open ? ' cg-toggle-on' : ''),
+				className: 'cg-toggle' + (open ? ' cg-toggle-on' : ''),
 				title: '文件',
 				'aria-label': '文件',
 				onClick: toggleOpen,
@@ -2109,12 +2116,17 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			react.useEffect(() => {
 				if (!drag) return;
-				const onMove = (e) => resizeMoveRef.current(e);
-				const onUp = () => endDragRef.current();
+				let raf = null;
+				const onMove = (e) => {
+					if (raf !== null) return;
+					raf = requestAnimationFrame(() => { raf = null; resizeMoveRef.current(e) });
+				};
+				const onUp = () => { if (raf !== null) { cancelAnimationFrame(raf); raf = null } endDragRef.current() };
 				window.addEventListener('pointermove', onMove);
 				window.addEventListener('pointerup', onUp);
 				window.addEventListener('pointercancel', onUp);
 				return () => {
+					if (raf !== null) cancelAnimationFrame(raf);
 					window.removeEventListener('pointermove', onMove);
 					window.removeEventListener('pointerup', onUp);
 					window.removeEventListener('pointercancel', onUp);
@@ -2171,7 +2183,6 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!q) return [];
 				return computeFindMatches(file.content || '', q, !!findState.caseSensitive, MAX_LINES);
 			}, [file && file.path, file && file.content, findState && findState.open, findState && findState.query, findState && findState.caseSensitive]);
-						const codeTotalLines = react.useMemo(() => String((file && file.content) || '').split('\n').length, [file && file.content]);
 			const mdParsed = react.useMemo(() => {
 				if (!file || file.view !== 'preview' || !isMarkdown(file.name)) return null;
 				let text = file.content || '';
@@ -2314,6 +2325,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			const [autoWatch, setAutoWatch] = react.useState(true);
 			const treeRef = react.useRef(null);
 			const pollBusyRef = react.useRef(false);
+			const pollFpRef = react.useRef(new Map());
 			const [status, setStatus] = react.useState(null);
 			const statusSeqRef = react.useRef(0);
 			const statusTimerRef = react.useRef(null);
@@ -2321,25 +2333,38 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
-			const codeBuilt = react.useMemo(() => {
+			const codeHighlighted = react.useMemo(() => {
 				if (!file || file.reading || file.error || file.tooLarge || file.binary || file.view === 'preview') return null;
 				const lines = contentLines(file.content);
 				const shown = lines.slice(0, MAX_LINES);
 				let markedLines = shown;
 				if (findMatches.length > 0) markedLines = markFindLines(markedLines, findMatches, -1);
-				const flashFn = flash && file.functions ? file.functions[flash.funcIndex] : null;
-				if (flashFn && flash && flash.name) {
-					const escName = flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-					const re = new RegExp('(?<![A-Za-z0-9_$])(' + escName + ')(?![A-Za-z0-9_$])', 'g');
-					markedLines = markedLines.map((line, idx) => {
-						const lineNo = idx + 1;
-						return (lineNo >= flashFn.start && lineNo <= flashFn.end) ? line.replace(re, '\u0001$1\u0002') : line;
-					});
-				}
 				const lang = file && file.name ? hlLangFor(file.name) : '';
-				const html = lang && lang !== 'markdown' && lang !== 'text' ? highlight(markedLines.join('\n'), lang) : escapeHtml(markedLines.join('\n'));
-				return { lineHtmls: splitHighlighted(html).slice(0, MAX_LINES), truncated: lines.length > MAX_LINES };
-			}, [file && file.path, file && file.view, file && file.content, file && file.name, flash && flash.name, flash && flash.funcIndex, findMatches]);
+				const joined = markedLines.join('\n');
+				const baseHtmls = lang && lang !== 'markdown' && lang !== 'text'
+					? highlightLines(joined, lang).slice(0, MAX_LINES)
+					: markedLines.map(escapeHtml);
+				return { baseHtmls, totalLines: lines.length, truncated: lines.length > MAX_LINES };
+			}, [file && file.path, file && file.view, file && file.content, file && file.name, findMatches]);
+
+			const codeBuilt = react.useMemo(() => {
+				if (!codeHighlighted) return null;
+				const { baseHtmls, totalLines, truncated } = codeHighlighted;
+				const flashFn = flash && file && file.functions ? file.functions[flash.funcIndex] : null;
+				if (flashFn && flash && flash.name) {
+					const esc = flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+					const re = new RegExp('(?<![A-Za-z0-9_$])(' + esc + ')(?![A-Za-z0-9_$])', 'g');
+					const open = '<mark class="cg-var-hit">', close = '</mark>';
+					const lineHtmls = baseHtmls.map((h, idx) => {
+						const lineNo = idx + 1;
+						if (lineNo < flashFn.start || lineNo > flashFn.end) return h;
+						return h.replace(re, open + '$1' + close);
+					});
+					return { lineHtmls, totalLines, truncated };
+				}
+				return { lineHtmls: baseHtmls, totalLines, truncated };
+			}, [codeHighlighted, flash && flash.name, flash && flash.funcIndex]);
+			const codeTotalLines = codeBuilt ? codeBuilt.totalLines : 0;
 
 			const resetFocusState = () => {
 				setActive(null);
@@ -2423,15 +2448,18 @@ html[data-cg-panel-open] [data-phase=active] {
 			react.useEffect(() => {
 				if (!rootPath) { setTree(null); store.rootPath = null; return }
 				store.rootPath = rootPath;
+				pollFpRef.current = new Map();
 				let cancelled = false;
 				setTree({ rootPath, rootName, expanded: new Set([rootPath]), cache: new Map(), loading: new Set([rootPath]), selected: null, errors: {} });
 				api.list(rootPath).then((res) => {
 					if (cancelled) return;
+					const entries = (res && res.entries) || [];
+					if (!res || !res.error) pollFpRef.current.set(rootPath, entries.map((e) => e.type + ':' + e.name).join('|'));
 					setTree((t) => {
 						if (!t || t.rootPath !== rootPath) return t;
 						const next = { ...t, loading: without(t.loading, rootPath) };
 						if (res && res.error) next.errors = { ...t.errors, [rootPath]: res.error };
-						else next.cache = new Map(t.cache).set(rootPath, (res && res.entries) || []);
+						else next.cache = new Map(t.cache).set(rootPath, entries);
 						return next;
 					});
 				}).catch((err) => {
@@ -2466,11 +2494,12 @@ html[data-cg-panel-open] [data-phase=active] {
 						if (!res || res.error) continue;
 						const ct = treeRef.current;
 						if (!ct || !ct.cache.has(dir)) continue;
-						const fpCur = ct.cache.get(dir).map((e) => e.type + ':' + e.name).join('|');
-						const fpNew = (res.entries || []).map((e) => e.type + ':' + e.name).join('|');
-						if (fpCur === fpNew) continue;
+						const entries = res.entries || [];
+						const fpNew = entries.map((e) => e.type + ':' + e.name).join('|');
+						if (fpNew === (pollFpRef.current.get(dir) || '')) continue;
+						pollFpRef.current.set(dir, fpNew);
 						changed++;
-						setTree((prev) => prev ? { ...prev, cache: new Map(prev.cache).set(dir, res.entries || []) } : prev);
+						setTree((prev) => prev ? { ...prev, cache: new Map(prev.cache).set(dir, entries) } : prev);
 					}
 					pollBusyRef.current = false;
 					if (changed > 0) showStatus({ ok: true, text: '检测到文件变化，已自动刷新' });
@@ -2570,11 +2599,13 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			const loadChildren = (path) => {
 				api.list(path).then((res) => {
+					const entries = (res && res.entries) || [];
+					if (res && !res.error) pollFpRef.current.set(path, entries.map((e) => e.type + ':' + e.name).join('|'));
 					setTree((t) => {
 						if (!t) return t;
 						const cache = new Map(t.cache);
 						const errors = { ...t.errors };
-						if (res && !res.error) cache.set(path, (res && res.entries) || []);
+						if (res && !res.error) cache.set(path, entries);
 						else errors[path] = (res && res.error) || 'list failed';
 						return { ...t, cache, errors, loading: without(t.loading, path) };
 					});
@@ -3258,7 +3289,6 @@ html[data-cg-panel-open] [data-phase=active] {
 				const built = codeBuilt || { lineHtmls: [], truncated: false };
 				// 虚拟滚动:只渲染可视行 + 上下缓冲,万行文件 DOM 规模恒定
 				const renderable = Math.min(built.lineHtmls.length, MAX_LINES);
-				// 行数组为空(如视图刚切换、memo 尚未重算)时不得强造出第 0 行
 				const start = renderable > 0 ? Math.max(0, Math.min(vrange.start, renderable - 1)) : 0;
 				const end = renderable > 0 ? Math.max(start + 1, Math.min(renderable, vrange.end)) : 0;
 				const findCur = findState && findMatches.length > 0 ? findMatches[Math.min(Math.max(findState.current || 0, 0), findMatches.length - 1)] : null;
@@ -3267,7 +3297,6 @@ html[data-cg-panel-open] [data-phase=active] {
 					const lineNo = i + 1;
 					const fi = lineFuncAt(lineNo);
 					let lineHtml = built.lineHtmls[i];
-					// 当前查找命中:把该行第 occ 个普通命中占位换成"当前"占位
 					if (findCur && findCur.line === lineNo) {
 						let cnt = 0, idx = -1;
 						while (cnt <= findCur.occ) {
@@ -3277,22 +3306,25 @@ html[data-cg-panel-open] [data-phase=active] {
 						}
 						if (idx >= 0) lineHtml = lineHtml.slice(0, idx) + '\u0005' + lineHtml.slice(idx + 1);
 					}
+					lineHtml = lineHtml
+						.replace(/\u0003/g, '<mark class="cg-find-hit">').replace(/\u0004/g, '</mark>')
+						.replace(/\u0005/g, '<mark class="cg-find-cur">').replace(/\u0006/g, '</mark>');
 					els.push(react.createElement('div', {
 						key: lineNo,
+						'data-line': lineNo,
 						className: 'cg-line' + (active !== null && fi === active ? ' cg-line-hi' : '') + (jumpLine && jumpLine.line === lineNo ? ' cg-line-jump' : ''),
-						onClick: (e) => { const fn = onLineClickRef.current; if (fn) fn(lineNo, e) },
 					},
 						react.createElement('span', { className: 'cg-ln' }, lineNo),
-						react.createElement('span', {
-							className: 'cg-code-text cg-hl',
-							dangerouslySetInnerHTML: { __html: lineHtml
-								.replace(/\u0001/g, '<mark class="cg-var-hit">').replace(/\u0002/g, '</mark>')
-								.replace(/\u0003/g, '<mark class="cg-find-hit">').replace(/\u0004/g, '</mark>')
-								.replace(/\u0005/g, '<mark class="cg-find-cur">').replace(/\u0006/g, '</mark>') },
-						}),
+						react.createElement('span', { className: 'cg-code-text cg-hl', dangerouslySetInnerHTML: { __html: lineHtml } }),
 					));
 				}
-				return react.createElement('div', { className: 'cg-code', ref: codePaneRef, onScroll: onCodeScroll },
+				const onCodeClick = (e) => {
+					const row = e.target.closest('.cg-line');
+					if (!row) return;
+					const ln = Number(row.getAttribute('data-line'));
+					if (ln > 0) { const fn = onLineClickRef.current; if (fn) fn(ln, e) }
+				};
+				return react.createElement('div', { className: 'cg-code', ref: codePaneRef, onScroll: onCodeScroll, onClick: onCodeClick },
 					start > 0 ? react.createElement('div', { style: { height: start * LINE_H + 'px', flex: 'none' } }) : null,
 					els,
 					end < renderable ? react.createElement('div', { style: { height: (renderable - end) * LINE_H + 'px', flex: 'none' } }) : null,
