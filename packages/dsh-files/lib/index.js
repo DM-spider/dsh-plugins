@@ -1,31 +1,16 @@
 /**
  * dsh-files — host half.
- *
- * Registers the /plugins/dsh-files/* HTTP routes for the files sidebar:
- * list (file tree), read (file content), search (filename search), and
- * explain (per-function AI explanations + mermaid call graph). `explain`
- * runs in two phases:
- *
- *  1. OUTLINE — the model lists every function definition with absolute
- *     line numbers (name + range only, tiny output).
- *  2. EXPLAIN — the file is walked in function-group windows; each model
- *     call explains exactly the listed functions of its window (one entry
- *     per function, keyed by name), plus caller→callee edges.
- *
- * The host merges by name so the client gets a strict 1:1 mirror of the
- * source functions and builds the mermaid call graph itself. The source
- * code is only ever DISPLAYED, never executed.
- *
+ * /plugins/dsh-files/* 路由:list(文件树)/ read(读文件)/ search(文件名搜索)/
+ * raw(图片等字节流)/ explain(逐函数 AI 解读 + mermaid 调用图)。
+ * explain 两阶段:OUTLINE 列出全部函数定义(名+绝对行号)→ EXPLAIN 按窗口
+ * 分组解读,合并后与源码函数 1:1 对应。源码只展示,绝不执行。
  * @module dsh-files
  */
 export const name = 'dsh-files'
 export const inject = ['fs']
 
 const MAX_EXPLAIN_BYTES = 1000000
-// Small/medium scripts take the SIMPLE path: one single model call returns
-// every function (1:1 with the source, nothing extra) in one shot. Only when
-// that fails (e.g. output cap) or the file is large does the chunked
-// two-phase pipeline take over.
+// 小/中脚本走单次调用;失败(输出超限等)或大文件才回退两阶段分段
 const SINGLE_CALL_MAX_LINES = 500
 const SINGLE_CALL_MAX_TOKENS = 24000
 const OUTLINE_WINDOW = 1200          // lines per outline call (small output each)
@@ -55,6 +40,7 @@ const SINGLE_PROMPT = [
   '- flow 写作风格:业务描述在前,代码标识符在后做注释。写"初始化全局配置`build_config`：从参数构建运行配置`config`，分配批次号`run_id`",不要写"调用 `build_config` 生成 `config`，生成 `run_id`"',
   '- flow 中每个步骤必须引用代码里真实出现的变量名/函数名,用反引号包裹;反引号只包裹标识符本身(如 `train_scorecards`),不带参数和括号',
   '- flow 步骤严禁泛泛写"遍历列表"而不指明遍历哪个变量',
+  '- 严禁把正则原文(如 /^[...$/、re.compile("…"))写进解读文本,用自然语言描述匹配规则;不要输出含反斜杠的路径/转义序列',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
   '- callEdges 只列代码里实际出现的调用关系,没有就为空数组',
 ].join('\n')
@@ -88,6 +74,7 @@ const EXPLAIN_PROMPT = [
   '- flow 写作风格:业务描述在前,代码标识符在后做注释。写"初始化全局配置`build_config`：从参数构建运行配置`config`，分配批次号`run_id`",不要写"调用 `build_config` 生成 `config`，生成 `run_id`"',
   '- flow 中每个步骤必须引用代码里真实出现的变量名/函数名,用反引号包裹;反引号只包裹标识符本身(如 `train_scorecards`),不带参数和括号',
   '- flow 步骤严禁泛泛写"遍历列表"而不指明遍历哪个变量',
+  '- 严禁把正则原文(如 /^[...$/、re.compile("…"))写进解读文本,用自然语言描述匹配规则;不要输出含反斜杠的路径/转义序列',
   '- 解读要通俗,说人话,重点讲"数据怎么进、怎么流转、得到什么"',
   '- callEdges 只列本段代码里实际出现的调用关系,没有就为空数组',
 ].join('\n')
@@ -120,10 +107,8 @@ export function apply(ctx) {
   }
   const param = (req, key) => new URL(req.url ?? '/', 'http://x').searchParams.get(key)
 
-  // Resolve the model route for code explanations (memoized per process):
-  // prefer the fast flash model (deepseek-official / deepseek-v4-flash) when
-  // registered; fall back to the default model selection, then to the first
-  // registered provider/model. Explanations do not need heavy reasoning.
+  // 模型路由:优先 deepseek-v4-flash(解读不需要推理),未注册时回退
+  // 默认选择,再回退第一个供应商/模型;失败不缓存,服务恢复后可重试
   let routePromise = null
   const resolveRoute = async () => {
     if (routePromise !== null) return routePromise
@@ -156,21 +141,19 @@ export function apply(ctx) {
       }
       throw new Error('无法解析模型路由')
     })()
-    // 失败不缓存:模型服务瞬断恢复后,下一次解读重试解析,而不是永久失败
+    // 失败不缓存:模型服务瞬断恢复后,下一次解读重试解析
     routePromise = routePromise.catch((err) => { routePromise = null; throw err })
     return routePromise
   }
 
-  // One-shot model call through the resolved route. Consumes raw stream
-  // chunks by hand so this bundle needs no runtime imports.
+  // 单次模型调用:手工消费原始流,本 bundle 无需任何运行时 import
   const LLM_CALL_TIMEOUT_MS = 120000
   const llmCall = async (system, userText, maxTokens, signal) => {
     const route = await resolveRoute()
     const llm = ctx.get('llm')
     const provider = route.provider
     const model = route.model
-    // 上游挂起防护:120s 超时(flash 快模型正常几秒~几十秒)。signal 传入
-    // stream,流式实现会在中断时停止迭代,解读不会永久 pending
+    // 上游挂起防护:120s 超时;signal 传给 stream,中断时停止迭代
     const timeoutSignal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
       ? AbortSignal.timeout(LLM_CALL_TIMEOUT_MS)
       : null
@@ -189,8 +172,7 @@ export function apply(ctx) {
       }],
       maxTokens,
       temperature: 0.2,
-      // 解读只是"把函数用中文讲清楚",不需要推理;关闭思考,否则默认
-      // reasoningEffort=max 的推理 token 会烧光输出预算导致 max-tokens
+      // 必须关思考:默认 reasoningEffort=max 的推理 token 会烧光输出预算
       reasoningEffort: 'off',
       signal: sig,
     })) {
@@ -210,29 +192,29 @@ export function apply(ctx) {
     const f = s.indexOf('{')
     const l = s.lastIndexOf('}')
     if (f >= 0 && l > f) s = s.slice(f, l + 1)
-    // 解析失败时把报错位置前后的原文片段拼进消息,一眼看出坏在哪
+    // 报错时附带坏处前后 80 字符的原文片段
     const decorate = (err, src) => {
-      const m = /position (\d+)/.exec(String((err && err.message) || ''))
+      const m = /position (\d+)/.exec(String(err.message))
       if (!m) return err
       const pos = Number(m[1])
       const snip = src.slice(Math.max(0, pos - 40), Math.min(src.length, pos + 40))
         .replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t')
-      const e = new Error(String((err && err.message) || err) + ' ｜坏处上下文: …' + snip + '…')
-      e.name = (err && err.name) || 'Error'
-      return e
+      return new Error(err.message + ' ｜坏处上下文: …' + snip + '…')
     }
     try {
       return JSON.parse(s)
     } catch (err) {
-      // 轻量修复(按序):
-      // 1) 反斜杠+字面换行/制表 → 合法 \n / \t(模型把续行写进了 JSON)
-      // 2) \u 后缺 4 位十六进制 → 去掉多余反斜杠
-      // 3) 其余非法转义(\s \x \' 等) → 去掉多余反斜杠
-      const repaired = s
+      // 模型常输出坏转义(路径 \s、正则双重转义 \\s、反斜杠续行):
+      // 按序修复并迭代消除到稳定(每轮至少少一个反斜杠,必收敛)
+      let repaired = s
         .replace(/\\\r?\n/g, '\\n')
         .replace(/\\\t/g, '\\t')
         .replace(/\\u(?![0-9a-fA-F]{4})/g, 'u')
-        .replace(/\\([^"\\\/bfnrtu])/g, '$1')
+      let prev
+      do {
+        prev = repaired
+        repaired = repaired.replace(/\\([^"\\\/bfnrtu])/g, '$1')
+      } while (repaired !== prev)
       if (repaired === s) throw decorate(err, s)
       try {
         return JSON.parse(repaired)
@@ -264,10 +246,8 @@ export function apply(ctx) {
     }
   }
 
-  // Phase 1: function outline (name + absolute line range) for the whole
-  // file, walked in bounded windows. Failures are STRUCTURED (not just
-  // warning strings): each carries the window range so a later
-  // "补全解读" can re-run exactly that window.
+  // Phase 1:按窗口列出全部函数定义(名+绝对行号);失败结构化记录窗口
+  // 范围,供「补全解读」精确重跑
   const outline = async (lines, baseName, langHint) => {
     const totalLines = lines.length
     const merged = []
@@ -290,10 +270,9 @@ export function apply(ctx) {
           const name = String((f && f.name) || '').trim()
           if (!name) continue
           const start = Math.max(1, Number(f && f.start) || 1)
-          // 同名不同函数(如多个类的 run/__init__)必须都保留;
-          // 用 名字#起始行 近似去重,只压掉同一函数被模型重复报告。
-          // okey 同时是该函数跨阶段的稳定标识:行号修正后 start 会变,
-          // 但 okey 不变,补全解读靠它原位写回
+          // okey = 名字#起始行:同名函数(多个类的 __init__)靠起始行区分,
+          // 只压掉同一函数被重复报告;行号修正后 start 会变但 okey 不变,
+          // 是跨阶段稳定标识,补全解读靠它原位写回
           const okey = name + '#' + start
           if (seen.has(okey)) continue
           seen.add(okey)
@@ -319,10 +298,9 @@ export function apply(ctx) {
     return { functions: merged, route, failures }
   }
 
-  // Phase 2: explain the outlined functions in grouped windows.
+  // Phase 2:把 outline 函数按行跨度分组,每组一次模型调用解释
   const explain = async (lines, outlineFunctions, baseName, langHint) => {
-    // Group consecutive functions so each window's line span stays bounded;
-    // a single oversized function gets its own window (body capped).
+    // 连续函数聚组,窗口行跨度受 EXPLAIN_WINDOW_SPAN 约束;超大函数独占一组
     const windows = []
     let group = []
     let minStart = null
@@ -348,24 +326,21 @@ export function apply(ctx) {
     const explanations = new Map()
     const edgeSet = new Set()
     const failures = []
-    // okey(name#清单起始行)是跨阶段稳定键:行号修正前建立、修正后不变
-    const okeyOf = (f) => f.okey || (f.name + '#' + f.start)
-    // 单个窗口的一次完整调用(调用+解析+合并),失败即抛,由调用方决定是否重试
+    // 单个窗口的一次完整调用(调用+解析+合并),失败即抛
     const runWindow = async (w, from, to, code, listText) => {
       const { text } = await llmCall(EXPLAIN_PROMPT,
         explainUserText(baseName, langHint, listText, from, to, code), EXPLAIN_MAX_TOKENS)
       const parsed = parseJson(text)
       const fns = Array.isArray(parsed.functions) ? parsed.functions : []
-      // 窗口列了 N 个函数却返回空列表:模型没照做,当失败处理(可触发自动重试)
+      // 窗口列了 N 个函数却返回空列表:模型没照做,按失败处理
       if (fns.length === 0 && w.funcs.length > 0) throw new Error('模型返回了空的函数解读列表')
-      // 按清单一一对应(以清单序号对齐,而不是按 name:同名函数必须各归各)
+      // 按清单序号一一对应(而不是按 name:同名函数必须各归各)
       for (let k = 0; k < fns.length && k < w.funcs.length; k++) {
         const wf = w.funcs[k]
         const f = fns[k]
-        explanations.set(okeyOf(wf), {
+        explanations.set(wf.okey, {
           summary: String((f && f.summary) || ''),
-          // flow 保持原始值:新格式是数组(步骤+行号),老格式是字符串,
-          // 绝不能 String() 强转,否则数组变 [object Object]
+          // flow 保持原始值(新格式是数组),String() 强转会变 [object Object]
           flow: (f && f.flow) || '',
           formula: String((f && f.formula) || ''),
         })
@@ -384,23 +359,8 @@ export function apply(ctx) {
         try {
           await runWindow(w, from, to, code, listText)
         } catch (err) {
-          // 输出格式坏(JSON 解析/空列表类错误):原样自动重试一次——与
-          // 「补全解读」同源,把模型输出的随机坏 JSON 在首轮就消化掉;
-          // 超时/模型服务类错误不自动重试(避免双倍等待)。仍失败才记失败组
-          if (/JSON|Unexpected/i.test(message(err))) {
-            try {
-              await runWindow(w, from, to, code, listText)
-            } catch (err2) {
-              failures.push({
-                phase: 'explain',
-                from,
-                to,
-                funcs: w.funcs,
-                text: '第 ' + from + ' 行起的一组函数解读失败(已自动重试一次): ' + message(err2),
-              })
-            }
-            continue
-          }
+          // 不自动重试:重试会把第二次 LLM 调用塞进首轮关键路径,拖慢整个
+          // 响应;首轮快速返回,失败组交给用户点「补全解读」只补失败组
           failures.push({
             phase: 'explain',
             from,
@@ -414,13 +374,13 @@ export function apply(ctx) {
     await Promise.all(Array.from({ length: Math.min(EXPLAIN_CONCURRENCY, windows.length) }, () => worker()))
 
     const functions = outlineFunctions.map((f) => {
-      const e = explanations.get(okeyOf(f))
+      const e = explanations.get(f.okey)
       return {
         name: f.name,
         start: f.start,
         end: f.end,
         signature: f.signature || '',
-        okey: okeyOf(f),
+        okey: f.okey,
         summary: e ? e.summary : '',
         flow: e ? e.flow : '',
         formula: e ? e.formula : '',
@@ -429,8 +389,7 @@ export function apply(ctx) {
     return { functions, edgeSet, failures, windows: windows.length }
   }
 
-  // Simple path: ONE model call for the whole (small/medium) script.
-  // Output is strictly 1:1 with the source functions, nothing extra.
+  // 小/中脚本单次调用:输出与源码函数严格 1:1
   const analyzeSingle = async (lines, baseName, langHint) => {
     const code = lines.join('\n')
     const userText = '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
@@ -487,24 +446,21 @@ export function apply(ctx) {
     }
   }
 
-  // Deterministic call-edge scan: inside each function's line range, every
-  // occurrence of "knownFunctionName(" counts as a call. Complements the
-  // model-reported edges so a missed call (e.g. main -> _load_main_module)
-  // still lands in the graph. Text-only, no extra model calls.
+  // 确定性调用边扫描:函数体内出现"已知函数名("即记为调用,补全模型漏报
+  // 的边(如 main → _load_main_module)。纯文本扫描,不再调模型
   const scanEdges = (functions, lines) => {
     const edges = new Set()
     const names = (functions || []).map((f) => f.name).filter((n) => n && n.length >= 2)
     if (names.length < 2) return edges
-    // 只扫图上会渲染的函数名(MAX_GRAPH_NODES),并把全部备选名合并成
-    // 一个正则:每个函数体只扫一遍。原来"每个 caller × 每个 callee"
-    // 各自全文跑正则,大文件(几百个函数)是 O(N²×L),解读会卡数十秒
+    // 只扫图上渲染的函数名(MAX_GRAPH_NODES)并合成一个正则:每个函数体只
+    // 扫一遍,避免"每个 caller × 每个 callee"的 O(N²×L) 全文件扫描
     const visible = names.slice(0, MAX_GRAPH_NODES)
     const re = new RegExp(
       '(?<![A-Za-z0-9_$])(' + visible.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\s*\\(',
       'g'
     )
-    // 函数体范围用"本函数起始行 → 下一函数起始行"精确定界(起始行已用
-    // 签名修正),最后一个函数延伸到文件末尾,不依赖模型猜的结束行
+    // 函数体 = [本函数起始行, 下一函数起始行)(起始行已签名修正),
+    // 不依赖模型猜的结束行;单个函数体上限 2000 行
     for (let ci = 0; ci < functions.length; ci++) {
       const caller = functions[ci]
       const nextStart = ci + 1 < functions.length ? functions[ci + 1].start : lines.length + 1
@@ -524,8 +480,7 @@ export function apply(ctx) {
 
   const buildCallGraph = (functions, edgeSet) => {
     const known = new Set((functions || []).map((f) => f.name))
-    // 节点:渲染全部函数(即使没有任何调用边的孤立函数也显示),
-    // 上限 MAX_GRAPH_NODES
+    // 节点:渲染全部函数(孤立函数也显示),上限 MAX_GRAPH_NODES
     const nodeNames = (functions || []).map((f) => f.name).slice(0, MAX_GRAPH_NODES)
     if (nodeNames.length === 0) return ''
     // 边:只保留两端都是当前脚本函数的调用关系
@@ -556,7 +511,7 @@ export function apply(ctx) {
     return rows.join('\n')
   }
 
-  // Cheap heuristic: does the content look like source code at all?
+  // 内容是否像源代码的粗判(全空时给出可操作提示用)
   const looksLikeCode = (content) => {
     const head = content.slice(0, 200000)
     const markers = [
@@ -573,19 +528,12 @@ export function apply(ctx) {
     return markers.some((re) => re.test(head))
   }
 
-  // Line-range correction: the model counts lines loosely, so we re-locate
-  // each function by its verbatim signature (first line, whitespace-free
-  // match) near the claimed start. For Python files the END line is then
-  // derived structurally: a function ends where indentation returns to the
-  // level of its def line (not merely "the line before the next def").
-  // Decorated signatures (e.g. "@property\ndef foo"): multi-line signatures
-  // never match a single physical line, so we anchor on the LAST signature
-  // line (the def/function line) and then walk UP to absorb the decorator
-  // lines into start — jumping to the function lands on its decorator, and
-  // line-range highlight covers the whole decorated definition.
+  // 行号校正:模型数行不准,用签名(去空白)反查真实起始行;Python 的结束行
+  // 按缩进规则推导(缩进回到 def 行层级即结束),花括号语言按括号配对。
+  // 装饰器:锚定最后一行签名(def 行)再向上吸收 @ 行,跳转落在装饰器上
   const correctRanges = (functions, lines, langHint) => {
     const norm = (s) => String(s).replace(/\s+/g, '')
-    // 预计算去空白行(函数数 × 全文件扫描时不再逐次 replace)
+    // 预计算去空白行,全文件扫描不逐次 replace
     const normLines = lines.map(norm)
     for (const f of functions) {
       if (!f.signature) continue
@@ -599,8 +547,8 @@ export function apply(ctx) {
         if (normLines[i - 1].startsWith(anchor)) { found = i; break }
       }
       if (found === -1) {
-        // 全文件回退:同名签名(如多个类的 __init__)不能取"第一个",
-        // 选 未被其他函数区间占用 且 离模型原始行号最近 的候选
+        // 全文件回退:同名签名不能取"第一个",选 未被其他函数区间占用 且
+        // 离模型原始行号最近 的候选
         let best = -1
         let bestDist = Infinity
         let bestOcc = 1
@@ -625,8 +573,8 @@ export function apply(ctx) {
     const isPython = langHint === 'py' || langHint === 'pyw'
       || /^\s*def\s/m.test(lines.slice(0, Math.min(200, lines.length)).join('\n'))
     if (isPython) {
-      // 缩进规则:函数在缩进回到 def 行层级时结束。
-      // start 可能是装饰器行,缩进基准必须取 def 行本身
+      // 缩进规则:缩进回到 def 行层级即函数结束;start 可能是装饰器行,
+      // 缩进基准必须取 def 行本身
       for (const f of functions) {
         let defIdx = -1
         for (let k = f.start; k <= Math.min(lines.length, f.start + 20); k++) {
@@ -636,7 +584,7 @@ export function apply(ctx) {
         const dm = /^(\s*)/.exec(lines[defIdx - 1])
         const defIndent = dm ? dm[1].length : 0
         let lastContent = defIdx
-        // 三引号字符串可跨行且中间行常顶格:顶格行不能算"缩进回到基级",
+        // 三引号字符串跨行时中间行常顶格:顶格行不能算"缩进回到基级",
         // 否则函数体被提前截断
         let inTriple = null
         for (let ln = defIdx + 1; ln <= lines.length; ln++) {
@@ -646,16 +594,14 @@ export function apply(ctx) {
             if (closeIdx >= 0) {
               inTriple = null
               lastContent = ln
-              // 同一行闭合后还有内容:按正常缩进逻辑继续判断该行
-              if (line.slice(closeIdx + 3).trim() === '') continue
+              if (line.slice(closeIdx + 3).trim() === '') continue // 同一行闭合后还有内容:继续按缩进判断
             } else {
               lastContent = ln
               continue
             }
           }
           if (/^\s*$/.test(line)) continue
-          // 多行签名/长表达式的续行收尾符(只含括号逗号冒号)不算回到基级
-          if (/^\s*[)\]},]+/.test(line)) continue
+          if (/^\s*[)\]},]+/.test(line)) continue // 续行收尾符不算回到基级
           const indent = /^(\s*)/.exec(line)[1].length
           const triple = /('''|""")/.exec(line)
           if (triple) {
@@ -671,20 +617,16 @@ export function apply(ctx) {
         if (lastContent >= f.start) f.end = lastContent
       }
     } else {
-      // 花括号语言:从函数定义向后找"括号深度归零处的 {"作为函数体起点,
-      // 再做花括号配对精确计算函数体结束行(剥离字符串/行注释/块注释干扰)。
-      // 单行箭头函数等无花括号的形式保持模型给的 end
-      // 找"函数体的 {":仅当签名括号已闭合(paren=0)时才接受;若某行扫完
-      // 括号已闭合却仍无 {,说明是单行箭头函数等无花括号形式,立即放弃,
-      // 避免跨行误配到下一个函数或普通代码的 {
+      // 花括号语言:签名括号闭合处(paren=0)的 { 为函数体起点,再做花括号
+      // 配对算结束行(剥离字符串/注释干扰);无花括号形式保持模型给的 end。
+      // 若某行扫完括号已闭合却仍无 {,是单行箭头函数等,立即放弃,避免误配
       const bodyBraceLine = (fromLine) => {
         // start 可能被上收到装饰器行(@ 开头):先跳过,否则首行 paren=0
         // 且无 { 会被误判为"无花括号形式"整体放弃配对
         let first = fromLine
         while (first <= Math.min(lines.length, fromLine + 30) && /^\s*@/.test(lines[first - 1])) first++
         let paren = 0
-        // 字符串/块注释跨行保持:JS 模板串(`)可跨行,块注释 /* */ 跨行,
-        // 否则第二行起的 { ( 会被当成代码计进括号配对
+        // 字符串/块注释跨行保持,否则第二行起的 { ( 会被当成代码计入配对
         let inStr = null
         let inBlock = false
         for (let ln = first; ln <= Math.min(lines.length, fromLine + 30); ln++) {
@@ -758,9 +700,8 @@ export function apply(ctx) {
     return functions
   }
 
-  // Normalize per-step flow arrays: keep only valid steps, clamp their line
-  // ranges into the function range, and force monotonic non-overlap so the
-  // client can map a clicked code line to the exact explanation step.
+  // 步骤流归一:只保留有效步骤、行号范围夹进函数区间、强制单调不重叠,
+  // 客户端才能把点击的代码行精确映射到解读步骤
   const normalizeFlowSteps = (functions) => {
     const stepTextOf = (s) => {
       if (typeof s === 'string') {
@@ -797,11 +738,9 @@ export function apply(ctx) {
     return functions
   }
 
-  // Anchor-based step alignment: the model's per-step line ranges drift, so
-  // we re-derive them deterministically — each step anchors at the FIRST line
-  // in the function where one of its backticked variables appears (steps are
-  // walked in model order with a moving cursor, so anchors stay monotonic).
-  // Step range = [anchor_i, anchor_{i+1} - 1], last step extends to fn end.
+  // 步骤锚定:模型给的行号范围会漂移,改按步骤文本里的反引号变量定位:
+  // 每步锚在函数体内该变量首次出现的行(移动游标保证单调),
+  // 步骤范围 = [锚_i, 锚_{i+1}-1],最后一步延伸到函数末尾
   const anchorFlowSteps = (functions, lines) => {
     const tokenRe = (tok) => new RegExp('(?<![A-Za-z0-9_$])' + tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])')
     const tokensOf = (text) => {
@@ -858,11 +797,8 @@ export function apply(ctx) {
       ctx.effect(() => webServer.register({ kind: 'exact', path, handler }), 'dsh-files: ' + path)
     }
 
-    // 工作区包含校验:DSH 宿主 fs 的 cwd 只是解析基准、不等于工作区根
-    // (客户端按工作区的绝对路径发请求),所以边界由客户端显式给出:
-    // 每个路由携带 root(工作区根,来自客户端文件树),目标路径必须位于
-    // root 之内;缺 root 或越界一律 403。../ 穿越与任意绝对路径
-    // 都被同一条规则挡住
+    // 工作区包含校验:客户端显式携带 root(工作区根),目标路径必须在 root
+    // 之内;缺 root 或越界一律 403,../ 穿越与任意绝对路径同一条规则挡住
     const normKey = (s) => String(s || '').replace(/\\/g, '/').replace(/\/+$/, '')
     const insideRoot = async (rootPath, target) => {
       if (!rootPath) return false
@@ -899,9 +835,7 @@ export function apply(ctx) {
         const seenDirs = new Set()
         const entries = (await fs.listDir(target)).filter((e) => {
           if (e.type !== 'directory') return true
-          // listDir 返回已解析的真实目标:符号链接目录指向自身或祖先
-          // 会在树里形成环路,直接不展示;同目录多个链接指向同一真实
-          // 目录也只保留第一个(展开状态按路径共享,重复展示无意义)
+          // 符号链接目录指向自身/祖先会成环:不展示;同目标多链接只留一个
           const key = normKey(e.target && e.target.targetKey)
           if (!key) return true
           if (key === dirKey || dirKey.startsWith(key + '/')) return false
@@ -922,8 +856,7 @@ export function apply(ctx) {
       }
     })
 
-    // Plain file read: the source pane loads this directly and instantly —
-    // no LLM involved. The explanation endpoint runs fully in parallel.
+    // 纯文本读文件:源码窗直接即时加载,不涉及 LLM;解读端点完全并行
     route('/plugins/dsh-files/read', async (req, res) => {
       const path = param(req, 'path')
       const root = param(req, 'root')
@@ -949,8 +882,7 @@ export function apply(ctx) {
         }
         size = typeof info.size === 'number' ? info.size : 0
         if (size > MAX_EXPLAIN_BYTES) {
-          // 大文件:先探测前 8KB 判二进制(zip/rar 等通常超限),
-          // 二进制按"无法预览"约定返回,而不是"文件过大"
+          // 大文件先探测前 8KB 判二进制(zip/rar 等通常超限)
           if (typeof fs.readBytes === 'function') {
             try {
               const head = await fs.readBytes(target, undefined, 8192)
@@ -970,8 +902,7 @@ export function apply(ctx) {
         }
         send(res, 200, { content, size })
       } catch (err) {
-        // 二进制/非 UTF-8(FS_NOT_TEXT)是"无法预览",不是错误:
-        // 不把宿主内部错误原文透传给用户
+        // 二进制/非 UTF-8(FS_NOT_TEXT)是"无法预览",不是错误
         if (err && err.code === 'FS_NOT_TEXT') {
           send(res, 200, { binary: true, size })
           return
@@ -1024,8 +955,8 @@ export function apply(ctx) {
       }
     })
 
-    // 图片/PDF 预览:按扩展名返回原始字节流(<img>/<iframe> 直接加载)。
-    // 文本读取(readText)会拒绝二进制文件,图片/PDF 必须走这里
+    // 图片/PDF 预览:按扩展名返回原始字节流(<img>/<iframe> 直接加载);
+    // 文本读取会拒绝二进制文件,必须走这里
     const RAW_MIME = {
       png: 'image/png',
       jpg: 'image/jpeg',
@@ -1140,8 +1071,8 @@ export function apply(ctx) {
         const langHint = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : ''
         const lines = content.replace(/\r\n/g, '\n').split('\n')
 
-        // 组装客户端负载:okey(内部稳定标识)剥离,对外以 id 暴露,
-        // 客户端 React 用 id 做 key,补全合并时已渲染卡片原地更新不重挂
+        // 组装客户端负载:内部稳定标识 okey 剥离后以 id 暴露,客户端 React
+        // 用 id 做 key,补全合并时已渲染卡片原地更新不重挂
         const finishData = (functions, edgeSet, infoWarnings, failures, chunks, route) => {
           const callGraph = buildCallGraph(functions, edgeSet)
           const strip = (f) => {
@@ -1155,8 +1086,7 @@ export function apply(ctx) {
               flow: f.flow,
               formula: f.formula,
             }
-            // 客户端 stepsOf 优先读 flowSteps(锚定后的步骤),必须保留
-            if (Array.isArray(f.flowSteps)) out.flowSteps = f.flowSteps
+            if (Array.isArray(f.flowSteps)) out.flowSteps = f.flowSteps // 锚定后的步骤,客户端优先读
             return out
           }
           return {
@@ -1176,10 +1106,9 @@ export function apply(ctx) {
           }
         }
 
-        // 定向补全:只对失败窗口重新调用模型,成功组一个 token 都不再花。
-        //  - outline 失败:重跑该清单窗口,新发现的函数补解读后追加合并
-        //  - explain 失败:重跑该窗口,按 okey 原位写回对应函数
-        // 完成后重跑全部确定性流水线(行号修正/步骤锚定/调用边/调用图)
+        // 定向补全:只重跑失败窗口。outline 失败 → 重跑清单窗口并补解读
+        // 新函数;explain 失败 → 重跑窗口按 okey 原位写回。完成后重跑
+        // 确定性流水线(行号修正/步骤锚定/调用边/调用图)
         const retryFailed = async (hitEntry, retryLines, retryBase, retryHint) => {
           const ctx = hitEntry.ctx
           const funcs = ctx.functions
@@ -1187,6 +1116,7 @@ export function apply(ctx) {
           const outlineJobs = ctx.failures.filter((g) => g.phase === 'outline')
           const explainJobs = ctx.failures.filter((g) => g.phase === 'explain')
           const remaining = []
+          const byKey = new Map(funcs.map((f) => [f.okey, f]))
 
           for (const g of outlineJobs) {
             const from = Math.min(Math.max(1, g.from), retryLines.length)
@@ -1245,7 +1175,6 @@ export function apply(ctx) {
                   explainUserText(retryBase, retryHint, listText, from, to, code), EXPLAIN_MAX_TOKENS)
                 const parsed = parseJson(text)
                 const fns = Array.isArray(parsed.functions) ? parsed.functions : []
-                const byKey = new Map(funcs.map((f) => [f.okey, f]))
                 for (let k = 0; k < fns.length && k < g.funcs.length; k++) {
                   const target = byKey.get(g.funcs[k].okey)
                   if (!target) continue
@@ -1285,9 +1214,8 @@ export function apply(ctx) {
           return data
         }
 
-        // 定向补全分支:缓存命中、文件未变(路径+mtime+大小一致)且有失败组
-        // 才走;缓存丢失(如重启 harness)或文件已变时无法安全合并,退化为
-        // 全量解读,客户端无感
+        // 定向补全分支:缓存命中、文件未变且有失败组才走;缓存丢失
+        // (如重启 harness)或文件已变时退化为全量解读,客户端无感
         if (body.retry && !body.refresh && hit && hit.mtime === mtime && hit.size === size && hit.ctx
           && Array.isArray(hit.ctx.failures) && hit.ctx.failures.length > 0 && hit.data) {
           const data = await retryFailed(hit, lines, baseName, langHint)
@@ -1302,28 +1230,23 @@ export function apply(ctx) {
             try {
               result = await analyzeSingle(lines, baseName, langHint)
             } catch (err) {
-              // 单次调用失败(如输出超限、未识别到函数)时自动回退到分段解读
+              // 单次调用失败(输出超限/未识别到函数)自动回退分段
               result = await analyzeChunked(lines, baseName, langHint)
               infoWarnings.push('单次解读失败,已自动回退分段解读: ' + message(err))
             }
           } else {
             result = await analyzeChunked(lines, baseName, langHint)
           }
-          // 仍为空:用正则判断文件到底像不像代码,给出可操作的提示
           if (result.functions.length === 0) {
-            if (looksLikeCode(content)) {
-              infoWarnings.push('该文件疑似代码,但模型未识别到函数;可点「重新解读」重试')
-            } else {
-              infoWarnings.push('该文件看起来不是代码(纯文本/配置),没有函数是正常的')
-            }
+            infoWarnings.push(looksLikeCode(content)
+              ? '该文件疑似代码,但模型未识别到函数;可点「重新解读」重试'
+              : '该文件看起来不是代码(纯文本/配置),没有函数是正常的')
           }
-          // 用签名反查修正行号(模型数行不准),再夹紧区间
+          // 确定性流水线:签名修正行号 → 步骤归一 → 变量锚定 → 调用边
           result.functions = correctRanges(result.functions, lines, langHint)
           result.functions = normalizeFlowSteps(result.functions)
           result.functions = anchorFlowSteps(result.functions, lines)
-          // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
-          const scanned = scanEdges(result.functions, lines)
-          for (const key of scanned) result.edgeSet.add(key)
+          for (const key of scanEdges(result.functions, lines)) result.edgeSet.add(key)
           return {
             functions: result.functions,
             edgeSet: result.edgeSet,
@@ -1339,7 +1262,7 @@ export function apply(ctx) {
         const entry = { mtime, promise: null }
         entry.promise = generate().then((res) => {
           const data = finishData(res.functions, res.edgeSet, res.infoWarnings, res.failures, res.chunks, res.route)
-          // 生成期间文件可能又变过(新 mtime 产生新 entry):旧结果不覆盖
+          // 生成期间文件又变过(新 mtime 产生新 entry):旧结果不覆盖
           if (cache.get(path) === entry) {
             cache.set(path, {
               mtime,
@@ -1364,7 +1287,7 @@ export function apply(ctx) {
         const data = await entry.promise
         send(res, 200, data)
       } catch (err) {
-        // 二进制/非 UTF-8:按"无法解读"约定返回,不透传宿主内部错误
+        // 二进制/非 UTF-8:按"无法解读"约定返回
         if (err && err.code === 'FS_NOT_TEXT') {
           send(res, 200, { binary: true })
           return

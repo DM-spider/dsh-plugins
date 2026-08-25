@@ -463,8 +463,7 @@ html[data-cg-panel-open] [data-phase=active] {
 .cg-retry-dots { flex: none; padding: 2px 8px; }`;
 
 		// ---------- fetch api ----------
-		// 所有请求显式携带 root(文件树根):宿主用它做工作区包含校验
-		// (宿主进程 cwd 不等于工作区根,不能作为边界依据)
+		// 请求显式携带 root(文件树根)做工作区包含校验(宿主 cwd 不等于工作区根)
 		const api = {
 			list: (path) => fetch('/plugins/dsh-files/list?path=' + encodeURIComponent(path) + '&root=' + encodeURIComponent(store.rootPath || '')).then((r) => r.json()),
 			search: (root, q) => fetch('/plugins/dsh-files/search?root=' + encodeURIComponent(root) + '&q=' + encodeURIComponent(q)).then((r) => r.json()),
@@ -1899,19 +1898,17 @@ html[data-cg-panel-open] [data-phase=active] {
 			if (!rootPath && wsItems.length > 0) { rootPath = wsItems[0].path; rootName = wsItems[0].title }
 
 			const [tree, setTree] = react.useState(null);
-			// 多页签:有序数组,每项 = 原 file 对象(内容/视图/滚动位置/解读结果
-			// 全部挂页签上);activePath 指向当前渲染页签。tabsRef 供异步回调读
-			// 最新值(读文件/解读的 .then 里闭包过期)。页签按打开顺序稳定排列,
-			// lastUsed 时间戳决定"满员时淘汰最久未用"
+			// 多页签:每项 = file 对象(内容/视图/滚动/解读结果都挂页签上);
+			// activePath 指向当前渲染页签;tabsRef 供异步回调读最新值;
+			// lastUsed 决定满员时淘汰最久未用
 			const [tabs, setTabs] = react.useState([]);
 			const [activePath, setActivePath] = react.useState(null);
 			const tabsRef = react.useRef([]);
 			const activePathRef = react.useRef(null);
 			const TAB_MAX = 8;
 			const commitTabs = (next) => { tabsRef.current = next; setTabs(next) };
-			// 单击树中文件的临时预览(VSCode 语义):预览 tab 常驻页签栏,
-			// 双击后整个对象转正为页签(解读/视图一并保留)。previewActive 决定
-			// 预览是否"当前显示":切到页签时预览 tab 保留但不激活,再点它即恢复
+			// 单击树文件的临时预览(VSCode 语义):双击转正为页签;previewActive
+			// 决定预览是否"当前显示"
 			const [previewFile, setPreviewFile] = react.useState(null);
 			const previewRef = react.useRef(null);
 			const [previewActive, setPreviewActive] = react.useState(false);
@@ -1975,8 +1972,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 				lastFindFollowViewRef.current = viewKey;
 			}, [findMatches, findState && findState.current, activePath, previewActive]);
-			// 按路径更新指定页签或预览对象(解读结果/读取完成等异步回调带
-			// path 守卫);updater 返回 null/false 表示删除
+			// 按路径更新页签或预览对象(异步回调带 path 守卫);updater 返回
+			// null/false 表示删除
 			const patchTab = (path, updater) => {
 				const pv = previewRef.current;
 				if (pv && pv.path === path) {
@@ -1985,11 +1982,46 @@ html[data-cg-panel-open] [data-phase=active] {
 					setPreviewFile(previewRef.current);
 					return;
 				}
-				commitTabs(tabsRef.current.map((t) => {
+				let hitLive = false;
+				const nextTabs = tabsRef.current.map((t) => {
 					if (t.path !== path) return t;
+					hitLive = true;
 					const n = typeof updater === 'function' ? updater(t) : updater;
 					return (n === null || n === false) ? null : n;
-				}).filter(Boolean));
+				}).filter(Boolean);
+				if (hitLive) { commitTabs(nextTabs); return }
+				// 页签已随工作区切走:异步结果落到它所属工作区的缓存里,
+				// 否则切回后页签永远卡在"生成中/读取中"
+				patchParkedTabs(path, updater);
+			};
+			// 把异步结果写回所有"停车"工作区缓存里的同名页签/预览
+			// (当前工作区由 patchTab 主路径处理,这里跳过)
+			const patchParkedTabs = (path, updater) => {
+				const current = rootKeyRef.current;
+				for (const [key, entry] of workspaceTabSets) {
+					if (key === current) continue;
+					let changed = false;
+					let nextPv = entry.preview;
+					if (nextPv && nextPv.path === path) {
+						const n = typeof updater === 'function' ? updater(nextPv) : updater;
+						nextPv = (n === null || n === false) ? null : n;
+						changed = changed || nextPv !== entry.preview;
+					}
+					const nextTabs = entry.tabs.map((t) => {
+						if (t.path !== path) return t;
+						const n = typeof updater === 'function' ? updater(t) : updater;
+						changed = changed || n !== t;
+						return (n === null || n === false) ? null : n;
+					}).filter(Boolean);
+					if (changed) {
+						workspaceTabSets.set(key, {
+							tabs: nextTabs,
+							preview: nextPv,
+							previewActive: entry.previewActive,
+							activePath: entry.activePath,
+						});
+					}
+				}
 			};
 			// 更新当前显示对象(视图切换/解读开关等):按显示中的 file 路由
 			const patchActive = (updater) => {
@@ -2150,7 +2182,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				jumpIndexRef.current = -1;
 				lastFocusRef.current = null;
 			};
-			// 切页前保存当前显示文件的滚动位置(源码/预览容器谁挂载存谁)
+			// 切页前保存当前显示文件的滚动位置(源码/预览谁挂载存谁)
 			const saveScroll = () => {
 				const p = file ? file.path : null;
 				if (!p) return;
@@ -2159,8 +2191,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const top = scroller.scrollTop;
 				patchTab(p, (t) => t ? { ...t, scrollTop: top } : t);
 			};
-			// 切换到指定页签:滚动位置/解读/视图随页签保留,切回原样恢复。
-			// 预览 tab 常驻页签栏:切到页签只是让预览"未激活",不销毁
+			// 切页签:滚动/解读/视图随页签保留,切回原样恢复;预览 tab 常驻不销毁
 			const switchTo = (path) => {
 				if (!path || (path === activePathRef.current && !(previewRef.current && previewActiveRef.current))) return;
 				saveScroll();
@@ -2177,15 +2208,14 @@ html[data-cg-panel-open] [data-phase=active] {
 				resetFocusState();
 				setPreviewActiveBoth(true);
 			};
-			// 关闭预览(页签栏 × 或预览态「关闭」):预览 tab 从页签栏移除
+			// 关闭预览:预览 tab 从页签栏移除
 			const closePreview = () => {
 				setPreviewFile(null);
 				previewRef.current = null;
 				setPreviewActiveBoth(false);
 				resetFocusState();
 			};
-			// 切页/切预览后恢复该对象上次滚动位置;没有记录的(首次打开)
-			// 回到顶部——不能继承上一个文件留下的滚动位置
+			// 切页/切预览后恢复该对象上次滚动位置;首次打开回到顶部
 			react.useLayoutEffect(() => {
 				const t = file;
 				const scroller = codePaneRef.current || mdRef.current;
@@ -2203,15 +2233,13 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			// ---- 分工作区页签集合 ----
-			// 机制:持续保存(每次页签/预览/活动页变化即写回模块级缓存)+
-			// 进入工作区时恢复(含组件重挂载)。restore 声明在 save 之前:
-			// 挂载时先从缓存取回,再用当前状态写回,空状态不会覆盖旧缓存
+			// 页签变化持续写回模块级缓存,进入工作区时恢复(含重挂载);
+			// restore 声明在 save 之前,空状态不会覆盖旧缓存
 			const rootKey = rootPath || '';
-			// save 防呆:rootKey 变化(含重挂载)的那次渲染,页签状态仍是上一
-			// 工作区的,跳过本次保存;restore 落地后的重渲染再写回正确数据,
-			// 避免 A 工作区的页签瞬写进 B 的缓存槽
+			// save 防呆:rootKey 变化的那次渲染,页签状态仍是上一工作区的,
+			// 跳过本次保存,避免 A 工作区的页签瞬写进 B 的缓存槽
 			const rootKeyRef = react.useRef(null);
-			// 进入工作区(含重挂载):恢复该区的页签集合(首次访问为空)
+			// 进入工作区:恢复该区的页签集合(首次访问为空)
 			react.useEffect(() => {
 				const saved = rootKey ? workspaceTabSets.get(rootKey) : null;
 				const t = saved ? saved.tabs : [];
@@ -2415,12 +2443,18 @@ html[data-cg-panel-open] [data-phase=active] {
 				});
 			};
 
+			// 解读结果的字段集:applyExplainResult 与补全成功共用
+			const explainFields = (res) => ({
+				functions: res.functions || [], callGraph: res.callGraph || '',
+				model: res.model || '', warnings: res.warnings || [],
+				failedGroups: res.failedGroups || [], chunks: res.chunks || 0,
+			});
 			const applyExplainResult = (path, res) => {
 				patchTab(path, (f) => {
 					if (!f) return f;
 					if (res && res.error) return { ...f, explaining: false, retrying: false, explainError: res.error };
 					if (res && res.binary) return { ...f, explaining: false, retrying: false, explainError: '二进制文件，无法解读' };
-					return { ...f, explaining: false, retrying: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], failedGroups: res.failedGroups || [], chunks: res.chunks || 0 };
+					return { ...f, explaining: false, retrying: false, ...explainFields(res) };
 				});
 			};
 			const failExplain = (path, err) => {
@@ -2616,23 +2650,20 @@ html[data-cg-panel-open] [data-phase=active] {
 				setTree((t) => t ? { ...t, expanded: new Set([t.rootPath]) } : t);
 			};
 
-			// 「解读」按钮,一个按钮两种语义(由解读框开关状态决定):
-			//  - 解读框关闭:走 host 缓存 —— host 按 路径+mtime 命中即秒回,
-			//    文件在外部被改动过(mtime 变)则自动走 LLM 重新生成
-			//  - 解读框已打开:再次点击 = 重新解读,强制走 LLM 重新生成
-			// 每次点击前都先重新读一遍源码,保证源码显示与解读结果的行号一致
-			// (文件可能已在外部编辑器里改过)。仅代码类文件提供该按钮
+			// 「解读」按钮两种语义:解读框关闭 → 走 host 缓存(路径+mtime 命中
+			// 秒回,文件变过自动走 LLM);已打开 → 强制重新解读。每次先重读源码
+			// 保证行号一致,仅代码类文件提供该按钮
 			const startExplain = (f) => {
 				if (!f || f.reading || f.error || f.tooLarge || f.binary || !isExplainable(f.name)) return;
 				if (f.explaining || f.retrying) {
-					// 生成/补全仍在进行:只重新展开板块等结果,不重复请求
+					// 生成/补全进行中:只重新展开板块等结果,不重复请求
 					patchTab(f.path, (t) => t ? { ...t, guideOn: true } : t);
 					return;
 				}
 				const path = f.path;
 				const force = !!f.guideOn; // 已打开再点 = 重新解读
 				patchTab(path, (t) => t ? { ...t, guideOn: true, explaining: true, retrying: false, explainError: null, warnings: [], failedGroups: [] } : t);
-				// 先刷新源码内容(文件可能在外部被改过);内容变化时清掉行号相关状态
+				// 先刷新源码(外部可能改过),行号变化时清空跳转历史与高亮
 				api.read(path, f.root || rootPath).then((res) => {
 					if (!res || res.error || res.tooLarge) return;
 					const cur = tabsRef.current.find((t) => t.path === path);
@@ -2640,15 +2671,12 @@ html[data-cg-panel-open] [data-phase=active] {
 						if (!t || t.content === res.content) return t;
 						return { ...t, content: res.content, size: res.size };
 					});
-					// 行号可能整体失效:清空当前页的跳转历史与高亮
 					if (cur && cur.content !== res.content) resetFocusState();
 				}).catch(() => { /* 读失败不阻塞解读 */ });
 				api.explain(path, force, false, f.root || rootPath).then((res) => applyExplainResult(path, res)).catch((err) => failExplain(path, err));
 			};
-			// 「补全解读」:只重跑失败组,不触发鲸鱼娘看板(独立 retrying 态)。
-			// 补全期间已有解读保持可见、可滚动;成功后按 id 原位补齐卡片,
-			// 完成/失败都不弹状态提示——报错框与卡片就地反映结果:
-			// 成功则失败框消失/计数减少,失败则框保留、按钮恢复可再点
+			// 「补全解读」:只重跑失败组,不走鲸鱼娘看板;已有解读保持可见,
+			// 成功后按 id 原位补齐,成败都不弹提示——报错框就地反映结果
 			const retryFailedGroups = () => {
 				const f = file;
 				if (!f || f.retrying || f.explaining) return;
@@ -2656,14 +2684,12 @@ html[data-cg-panel-open] [data-phase=active] {
 				patchTab(path, (t) => t ? { ...t, retrying: true } : t);
 				api.explain(path, false, true, f.root || rootPath).then((res) => {
 					if (res && res.error) {
-						// host 出错:保持已有解读,按钮恢复,静默
-						patchTab(path, (t) => t ? { ...t, retrying: false } : t);
+						patchTab(path, (t) => t ? { ...t, retrying: false } : t); // host 出错:保持已有解读,静默
 						return;
 					}
-					patchTab(path, (t) => t ? { ...t, retrying: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], failedGroups: res.failedGroups || [], chunks: res.chunks || 0 } : t);
+					patchTab(path, (t) => t ? { ...t, retrying: false, ...explainFields(res) } : t);
 				}).catch(() => {
-					// 网络异常:保持已有解读,按钮恢复,静默
-					patchTab(path, (t) => t ? { ...t, retrying: false } : t);
+					patchTab(path, (t) => t ? { ...t, retrying: false } : t); // 网络异常:静默,按钮恢复
 				});
 			};
 			const runExplain = () => { if (file) startExplain(file) };
@@ -2736,30 +2762,53 @@ html[data-cg-panel-open] [data-phase=active] {
 				return null;
 			};
 
-			// 行号→滚动位置,平滑滑动到位(与解读板块 scrollIntoView smooth 一致)。
-			// 虚拟滚动下目标行可能尚未渲染,不能靠 DOM 找元素,只能数学换算。
-			// onArrive:目标行进入可视区(滑动到位)后回调,闪烁不提前开始
+			// JS 平滑滚动:不依赖原生 smooth(系统关动画效果时原生会瞬跳)。
+			// wheel/触摸/指针按下立即取消,用户手动滚动优先;到位回调 onArrive
+			const scrollAnims = new WeakMap();
+			const animateScroll = (el, targetTop, onArrive) => {
+				const prev = scrollAnims.get(el);
+				if (prev) prev.cancel();
+				const startTop = el.scrollTop;
+				const delta = targetTop - startTop;
+				if (Math.abs(delta) < 1) { if (onArrive) onArrive(); return }
+				const t0 = performance.now();
+				const dur = Math.min(600, Math.max(220, Math.abs(delta) * 0.35));
+				let raf = 0;
+				let done = false;
+				const stop = () => {
+					if (done) return;
+					done = true;
+					cancelAnimationFrame(raf);
+					el.removeEventListener('wheel', stop);
+					el.removeEventListener('touchstart', stop);
+					el.removeEventListener('pointerdown', stop);
+					scrollAnims.delete(el);
+				};
+				const anim = { cancel: stop };
+				scrollAnims.set(el, anim);
+				const step = (now) => {
+					if (done) return;
+					const p = Math.min(1, (now - t0) / dur);
+					// easeInOutCubic:起止缓、中段快
+					const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+					el.scrollTop = startTop + delta * eased;
+					if (p < 1) { raf = requestAnimationFrame(step); return }
+					stop();
+					if (onArrive) onArrive();
+				};
+				el.addEventListener('wheel', stop, { passive: true });
+				el.addEventListener('touchstart', stop, { passive: true });
+				el.addEventListener('pointerdown', stop, { passive: true });
+				raf = requestAnimationFrame(step);
+			};
+
+			// 行号→滚动位置平滑滑到位后回调 onArrive(闪烁不提前开始);
+			// 虚拟滚动下目标行可能未渲染,只能数学换算
 			const jumpToLine = (start, onArrive) => {
 				const pane = codePaneRef.current;
 				if (!pane) { if (onArrive) onArrive(); return }
 				const top = Math.max(0, (start - 1) * LINE_H - Math.floor(pane.clientHeight * 0.2));
-				if (typeof pane.scrollTo === 'function') {
-					pane.scrollTo({ top, behavior: 'smooth' });
-					if (onArrive) {
-						// 长距离滑动期间轮询:行一进可视区立刻闪烁;异常情况下
-						// 最多等 3s 强制触发,不留永远不闪的死角
-						let guard = 0;
-						const check = () => {
-							if (lineVisibleInPane(start)) { onArrive(); return }
-							if (guard++ < 60) setTimeout(check, 50);
-							else onArrive();
-						};
-						setTimeout(check, 50);
-					}
-				} else {
-					pane.scrollTop = top;
-					if (onArrive) onArrive();
-				}
+				animateScroll(pane, top, onArrive);
 			};
 
 			// 目标行闪烁 2s(跳转定位反馈)
@@ -2796,8 +2845,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				return fn.start;
 			};
 			// 目标行是否完整落在代码窗可视区内(纯数学换算,虚拟滚动未渲染的
-			// 行也能判)。解读侧点击用它决定"只闪烁不滚动":用户正在看这段
-			// 代码时,点击解读项不应把视图拖走
+			// 行也能判)。解读侧点击用它决定"只闪烁不滚动",不把视图拖走
 			const lineVisibleInPane = (lineNo) => {
 				const pane = codePaneRef.current;
 				if (!pane) return false;
@@ -2806,10 +2854,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				const bottomVis = Math.floor((pane.scrollTop + pane.clientHeight) / LINE_H);
 				return lineNo >= topVis && lineNo <= bottomVis;
 			};
-			// 所有跳转统一入口(当前文件内):记录出发点+落点入历史栈 →
-			// 滚动定位 → 目标行闪烁。出发点优先取"最近交互行"
-			// (用户实际点击的那行),没有才用滚动位置折算。soft 模式(解读侧
-			// 点击)下目标行已在可视区内则跳过滚动,只闪烁
+			// 跳转统一入口:出发点+落点入历史栈 → 滚动定位 → 目标行闪烁。
+			// 出发点优先取"最近交互行";soft(解读侧)下目标已可见则只闪不滚
 			const navigateTo = (line, from, soft) => {
 				const arr = jumpHistoryRef.current;
 				const idx = jumpIndexRef.current;
@@ -2905,11 +2951,9 @@ html[data-cg-panel-open] [data-phase=active] {
 				return null;
 			};
 
-			// 看代码 → 点代码行 → 解读卡片中"对应的解读项"闪烁 1 次(底色 2 秒)。
-			// 点击函数头区域(装饰器/签名/def 行,即函数名所在处)→ 主解读区
-			// (函数名 + 摘要)闪烁;行落在步骤行号范围内 → 对应步骤闪烁;
-			// 空隙行按标识符匹配/位置比例就近,都不中 → 主解读区。
-			// 新数据按模型给出的步骤行号范围精确命中;旧数据(无步骤行号)走标识符匹配
+			// 点代码行 → 对应解读项闪烁 1 次(底色 2 秒):函数头区域 → 主解读区;
+			// 行落在步骤范围内 → 对应步骤;空隙行按标识符匹配/位置比例就近,
+			// 都不中 → 主解读区。无步骤数据(旧格式)走标识符匹配
 			const flashGuideItem = (idx, lineNo) => {
 				const guideEl = guideRef.current;
 				const card = guideEl ? guideEl.querySelector('.cg-card[data-idx="' + idx + '"]') : null;
@@ -2945,13 +2989,22 @@ html[data-cg-panel-open] [data-phase=active] {
 				return true;
 			};
 
-			// 解读项元素闪烁:摘旧类 → 强制回流重挂类触发动画。
-			// 定时器被新的闪烁顶掉时,旧元素靠 itemFlashElRef 引用摘类,不留残留
+			// 解读项闪烁:摘旧类 → 强制回流重挂类触发动画;定时器被新闪烁
+			// 顶掉时,旧元素靠 itemFlashElRef 摘类。目标不在解读窗可视区内
+			// 时用 JS 动画平滑滚到(nearest 语义:最小滚动量)
 			const flashItemEl = (el) => {
 				if (!el) return;
 				if (itemFlashElRef.current) itemFlashElRef.current.classList.remove('cg-item-flash');
 				itemFlashElRef.current = el;
-				el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+				const guideEl = guideRef.current;
+				if (guideEl) {
+					const gRect = guideEl.getBoundingClientRect();
+					const eRect = el.getBoundingClientRect();
+					let target = guideEl.scrollTop;
+					if (eRect.top < gRect.top) target += eRect.top - gRect.top - 8;
+					else if (eRect.bottom > gRect.bottom) target += eRect.bottom - gRect.bottom + 8;
+					if (Math.abs(target - guideEl.scrollTop) > 1) animateScroll(guideEl, target);
+				}
 				el.classList.remove('cg-item-flash');
 				void el.offsetWidth;
 				el.classList.add('cg-item-flash');
@@ -3241,26 +3294,23 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (file.explainError) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.explainError + '\n\n可点击右上角「重新解读」重试');
 				if (file.error || file.tooLarge) return null;
 				const fns = file.functions || [];
-				// 失败组与提示信息分开:新 host 返回结构化 failedGroups(warnings 只
-				// 放提示);旧 host 只有 warnings,此时 warnings 即失败组文本
-				const structured = Array.isArray(file.failedGroups);
-				const failedGroups = structured ? file.failedGroups : [];
-				const groupWarnCount = structured ? failedGroups.length : (file.warnings || []).length;
-				const firstGroupText = structured ? (failedGroups.length > 0 ? failedGroups[0].text : '') : ((file.warnings && file.warnings[0]) || '');
-				const infoWarnings = structured ? (file.warnings || []) : [];
-				// 报错框:文本在左,「补全解读」按钮在最右;补全中按钮位置变三点跳动
+				// 失败组(failedGroups)与提示(warnings)分开展示
+				const failedGroups = file.failedGroups || [];
+				const firstGroupText = failedGroups.length > 0 ? failedGroups[0].text : '';
+				const infoWarnings = file.warnings || [];
+				// 报错框:文本在左,「补全解读」按钮在最右;补全中按钮原位变三点
 				const warnBox = () => {
-					if (groupWarnCount === 0 && infoWarnings.length === 0) return null;
+					if (failedGroups.length === 0 && infoWarnings.length === 0) return null;
 					const btn = failedGroups.length > 0
 						? (file.retrying
 							? react.createElement('span', { className: 'cg-loading-dots cg-retry-dots', title: '正在补全…' },
 								react.createElement('i'), react.createElement('i'), react.createElement('i'))
 							: react.createElement('button', { className: 'cg-btn cg-retry-btn', onClick: retryFailedGroups }, '补全解读'))
 						: null;
-					const head = groupWarnCount > 0 ? '⚠ ' + groupWarnCount + ' 组函数解读失败' + (firstGroupText ? '\n' + firstGroupText : '') : '';
+					const head = failedGroups.length > 0 ? '⚠ ' + failedGroups.length + ' 组函数解读失败' + (firstGroupText ? '\n' + firstGroupText : '') : '';
 					const info = infoWarnings.length > 0 ? (head ? '\n' : '') + infoWarnings.join('\n') : '';
 					return react.createElement('div', { className: 'cg-error cg-warnbox', style: { padding: '6px 4px 6px 10px' } },
-						react.createElement('div', { className: 'cg-warn-text' }, (head + info) || '⚠ 部分解读失败'),
+						react.createElement('div', { className: 'cg-warn-text' }, head + info),
 						btn,
 					);
 				};
