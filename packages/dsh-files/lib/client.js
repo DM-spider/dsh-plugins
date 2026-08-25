@@ -2989,30 +2989,36 @@ html[data-cg-panel-open] [data-phase=active] {
 				return true;
 			};
 
-			// 解读项闪烁:摘旧类 → 强制回流重挂类触发动画;定时器被新闪烁
-			// 顶掉时,旧元素靠 itemFlashElRef 摘类。目标不在解读窗可视区内
-			// 时用 JS 动画平滑滚到(nearest 语义:最小滚动量)
+			// 解读项闪烁:与代码窗观感一致——目标不在可视区时滑到"窗高 20% 处"
+			// 到位后再闪(不是边滚边闪);摘旧类 → 强制回流重挂类触发动画
 			const flashItemEl = (el) => {
 				if (!el) return;
 				if (itemFlashElRef.current) itemFlashElRef.current.classList.remove('cg-item-flash');
 				itemFlashElRef.current = el;
+				const applyFlash = () => {
+					// 滚动期间被更新的闪烁顶掉:旧到达不再动作
+					if (itemFlashElRef.current !== el) return;
+					el.classList.remove('cg-item-flash');
+					void el.offsetWidth;
+					el.classList.add('cg-item-flash');
+					if (itemFlashTimerRef.current !== null) clearTimeout(itemFlashTimerRef.current);
+					itemFlashTimerRef.current = setTimeout(() => {
+						itemFlashTimerRef.current = null;
+						if (itemFlashElRef.current) { itemFlashElRef.current.classList.remove('cg-item-flash'); itemFlashElRef.current = null }
+					}, 2000);
+				};
 				const guideEl = guideRef.current;
+				let outOfView = false;
 				if (guideEl) {
 					const gRect = guideEl.getBoundingClientRect();
 					const eRect = el.getBoundingClientRect();
-					let target = guideEl.scrollTop;
-					if (eRect.top < gRect.top) target += eRect.top - gRect.top - 8;
-					else if (eRect.bottom > gRect.bottom) target += eRect.bottom - gRect.bottom + 8;
-					if (Math.abs(target - guideEl.scrollTop) > 1) animateScroll(guideEl, target);
+					outOfView = eRect.top < gRect.top || eRect.bottom > gRect.bottom;
+					if (outOfView) {
+						const target = guideEl.scrollTop + (eRect.top - gRect.top) - Math.floor(gRect.height * 0.2);
+						animateScroll(guideEl, target, applyFlash);
+					}
 				}
-				el.classList.remove('cg-item-flash');
-				void el.offsetWidth;
-				el.classList.add('cg-item-flash');
-				if (itemFlashTimerRef.current !== null) clearTimeout(itemFlashTimerRef.current);
-				itemFlashTimerRef.current = setTimeout(() => {
-					itemFlashTimerRef.current = null;
-					if (itemFlashElRef.current) { itemFlashElRef.current.classList.remove('cg-item-flash'); itemFlashElRef.current = null }
-				}, 2000);
+				if (!outOfView) applyFlash();
 			};
 
 			// 等宽字体字符宽度(把点击横坐标折算成行内字符偏移)
