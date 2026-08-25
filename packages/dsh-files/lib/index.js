@@ -210,8 +210,47 @@ export function apply(ctx) {
     const f = s.indexOf('{')
     const l = s.lastIndexOf('}')
     if (f >= 0 && l > f) s = s.slice(f, l + 1)
-    return JSON.parse(s)
+    // 解析失败时把报错位置前后的原文片段拼进消息,一眼看出坏在哪
+    const decorate = (err, src) => {
+      const m = /position (\d+)/.exec(String((err && err.message) || ''))
+      if (!m) return err
+      const pos = Number(m[1])
+      const snip = src.slice(Math.max(0, pos - 40), Math.min(src.length, pos + 40))
+        .replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t')
+      const e = new Error(String((err && err.message) || err) + ' ｜坏处上下文: …' + snip + '…')
+      e.name = (err && err.name) || 'Error'
+      return e
+    }
+    try {
+      return JSON.parse(s)
+    } catch (err) {
+      // 轻量修复(按序):
+      // 1) 反斜杠+字面换行/制表 → 合法 \n / \t(模型把续行写进了 JSON)
+      // 2) \u 后缺 4 位十六进制 → 去掉多余反斜杠
+      // 3) 其余非法转义(\s \x \' 等) → 去掉多余反斜杠
+      const repaired = s
+        .replace(/\\\r?\n/g, '\\n')
+        .replace(/\\\t/g, '\\t')
+        .replace(/\\u(?![0-9a-fA-F]{4})/g, 'u')
+        .replace(/\\([^"\\\/bfnrtu])/g, '$1')
+      if (repaired === s) throw decorate(err, s)
+      try {
+        return JSON.parse(repaired)
+      } catch (err2) {
+        throw decorate(err2, repaired)
+      }
+    }
   }
+
+  // outline / explain 两阶段共用的 user 消息模板(全量与补全复用,避免漂移)
+  const outlineUserText = (baseName, langHint, from, to, code) =>
+    '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
+    + '\n本段覆盖完整文件的第 ' + from + ' 行到第 ' + to + ' 行,行号请按完整文件计算。'
+    + '\n\n```\n' + code + '\n```'
+  const explainUserText = (baseName, langHint, listText, from, to, code) =>
+    '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
+    + '\n\n本段要解读的函数清单(必须一一对应):\n' + listText
+    + '\n\n源代码片段(完整文件第 ' + from + ' 行到第 ' + to + ' 行):\n```\n' + code + '\n```'
 
   // callEdges → edgeSet 键(a\u0000b):只保留两端非空且互异的成对数组
   const collectEdges = (parsed, edgeSet) => {
@@ -226,12 +265,14 @@ export function apply(ctx) {
   }
 
   // Phase 1: function outline (name + absolute line range) for the whole
-  // file, walked in bounded windows.
+  // file, walked in bounded windows. Failures are STRUCTURED (not just
+  // warning strings): each carries the window range so a later
+  // "补全解读" can re-run exactly that window.
   const outline = async (lines, baseName, langHint) => {
     const totalLines = lines.length
     const merged = []
     const seen = new Set()
-    const warnings = []
+    const failures = []
     let route = ''
     const jobs = []
     for (let start = 0; start < totalLines; start += OUTLINE_WINDOW) {
@@ -240,34 +281,42 @@ export function apply(ctx) {
     for (const job of jobs) {
       try {
         const code = lines.slice(job.start, job.end).join('\n')
-        const userText = '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
-          + '\n本段覆盖完整文件的第 ' + (job.start + 1) + ' 行到第 ' + job.end + ' 行,行号请按完整文件计算。'
-          + '\n\n```\n' + code + '\n```'
-        const { text, provider, model } = await llmCall(OUTLINE_PROMPT, userText, OUTLINE_MAX_TOKENS)
+        const { text, provider, model } = await llmCall(OUTLINE_PROMPT,
+          outlineUserText(baseName, langHint, job.start + 1, job.end, code), OUTLINE_MAX_TOKENS)
         route = provider + '/' + model
         const parsed = parseJson(text)
         const fns = Array.isArray(parsed.functions) ? parsed.functions : []
         for (const f of fns) {
           const name = String((f && f.name) || '').trim()
           if (!name) continue
+          const start = Math.max(1, Number(f && f.start) || 1)
           // 同名不同函数(如多个类的 run/__init__)必须都保留;
-          // 用 名字#起始行 近似去重,只压掉同一函数被模型重复报告
-          const key = name + '#' + (Math.max(1, Number(f && f.start) || 1))
-          if (seen.has(key)) continue
-          seen.add(key)
+          // 用 名字#起始行 近似去重,只压掉同一函数被模型重复报告。
+          // okey 同时是该函数跨阶段的稳定标识:行号修正后 start 会变,
+          // 但 okey 不变,补全解读靠它原位写回
+          const okey = name + '#' + start
+          if (seen.has(okey)) continue
+          seen.add(okey)
           merged.push({
             name,
-            start: Math.max(1, Number(f && f.start) || 1),
+            start,
             end: Math.max(1, Number(f && f.end) || 1),
             signature: String((f && f.signature) || ''),
+            okey,
           })
         }
       } catch (err) {
-        warnings.push('第 ' + (job.start + 1) + ' 行起的函数清单失败: ' + message(err))
+        failures.push({
+          phase: 'outline',
+          from: job.start + 1,
+          to: job.end,
+          funcs: [],
+          text: '第 ' + (job.start + 1) + ' 行起的函数清单失败: ' + message(err),
+        })
       }
     }
     merged.sort((a, b) => a.start - b.start || a.end - b.end)
-    return { functions: merged, route, warnings }
+    return { functions: merged, route, failures }
   }
 
   // Phase 2: explain the outlined functions in grouped windows.
@@ -298,7 +347,31 @@ export function apply(ctx) {
 
     const explanations = new Map()
     const edgeSet = new Set()
-    const warnings = []
+    const failures = []
+    // okey(name#清单起始行)是跨阶段稳定键:行号修正前建立、修正后不变
+    const okeyOf = (f) => f.okey || (f.name + '#' + f.start)
+    // 单个窗口的一次完整调用(调用+解析+合并),失败即抛,由调用方决定是否重试
+    const runWindow = async (w, from, to, code, listText) => {
+      const { text } = await llmCall(EXPLAIN_PROMPT,
+        explainUserText(baseName, langHint, listText, from, to, code), EXPLAIN_MAX_TOKENS)
+      const parsed = parseJson(text)
+      const fns = Array.isArray(parsed.functions) ? parsed.functions : []
+      // 窗口列了 N 个函数却返回空列表:模型没照做,当失败处理(可触发自动重试)
+      if (fns.length === 0 && w.funcs.length > 0) throw new Error('模型返回了空的函数解读列表')
+      // 按清单一一对应(以清单序号对齐,而不是按 name:同名函数必须各归各)
+      for (let k = 0; k < fns.length && k < w.funcs.length; k++) {
+        const wf = w.funcs[k]
+        const f = fns[k]
+        explanations.set(okeyOf(wf), {
+          summary: String((f && f.summary) || ''),
+          // flow 保持原始值:新格式是数组(步骤+行号),老格式是字符串,
+          // 绝不能 String() 强转,否则数组变 [object Object]
+          flow: (f && f.flow) || '',
+          formula: String((f && f.formula) || ''),
+        })
+      }
+      collectEdges(parsed, edgeSet)
+    }
     let cursor = 0
     const worker = async () => {
       while (cursor < windows.length) {
@@ -308,46 +381,52 @@ export function apply(ctx) {
         const to = Math.min(lines.length, w.maxEnd + 2)
         const code = lines.slice(from - 1, to).join('\n')
         const listText = w.funcs.map((f) => '- ' + f.name + ' (第 ' + f.start + ' – ' + f.end + ' 行)').join('\n')
-        const userText = '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
-          + '\n\n本段要解读的函数清单(必须一一对应):\n' + listText
-          + '\n\n源代码片段(完整文件第 ' + from + ' 行到第 ' + to + ' 行):\n```\n' + code + '\n```'
         try {
-          const { text } = await llmCall(EXPLAIN_PROMPT, userText, EXPLAIN_MAX_TOKENS)
-          const parsed = parseJson(text)
-          const fns = Array.isArray(parsed.functions) ? parsed.functions : []
-          // 按清单一一对应(以清单序号对齐,而不是按 name:同名函数必须各归各)
-          for (let k = 0; k < fns.length && k < w.funcs.length; k++) {
-            const wf = w.funcs[k]
-            const f = fns[k]
-            explanations.set(wf.name + '#' + wf.start, {
-              summary: String((f && f.summary) || ''),
-              // flow 保持原始值:新格式是数组(步骤+行号),老格式是字符串,
-              // 绝不能 String() 强转,否则数组变 [object Object]
-              flow: (f && f.flow) || '',
-              formula: String((f && f.formula) || ''),
-            })
-          }
-          collectEdges(parsed, edgeSet)
+          await runWindow(w, from, to, code, listText)
         } catch (err) {
-          warnings.push('第 ' + from + ' 行起的一组函数解读失败: ' + message(err))
+          // 输出格式坏(JSON 解析/空列表类错误):原样自动重试一次——与
+          // 「补全解读」同源,把模型输出的随机坏 JSON 在首轮就消化掉;
+          // 超时/模型服务类错误不自动重试(避免双倍等待)。仍失败才记失败组
+          if (/JSON|Unexpected/i.test(message(err))) {
+            try {
+              await runWindow(w, from, to, code, listText)
+            } catch (err2) {
+              failures.push({
+                phase: 'explain',
+                from,
+                to,
+                funcs: w.funcs,
+                text: '第 ' + from + ' 行起的一组函数解读失败(已自动重试一次): ' + message(err2),
+              })
+            }
+            continue
+          }
+          failures.push({
+            phase: 'explain',
+            from,
+            to,
+            funcs: w.funcs,
+            text: '第 ' + from + ' 行起的一组函数解读失败: ' + message(err),
+          })
         }
       }
     }
     await Promise.all(Array.from({ length: Math.min(EXPLAIN_CONCURRENCY, windows.length) }, () => worker()))
 
     const functions = outlineFunctions.map((f) => {
-      const e = explanations.get(f.name + '#' + f.start)
+      const e = explanations.get(okeyOf(f))
       return {
         name: f.name,
         start: f.start,
         end: f.end,
         signature: f.signature || '',
+        okey: okeyOf(f),
         summary: e ? e.summary : '',
         flow: e ? e.flow : '',
         formula: e ? e.formula : '',
       }
     })
-    return { functions, edgeSet, warnings, windows: windows.length }
+    return { functions, edgeSet, failures, windows: windows.length }
   }
 
   // Simple path: ONE model call for the whole (small/medium) script.
@@ -364,18 +443,20 @@ export function apply(ctx) {
     for (const f of fns) {
       const name = String((f && f.name) || '').trim()
       if (!name) continue
-      const key = name + '#' + (Math.max(1, Number(f && f.start) || 1))
-      if (seen.has(key)) continue
-      seen.add(key)
+      const start = Math.max(1, Number(f && f.start) || 1)
+      const okey = name + '#' + start
+      if (seen.has(okey)) continue
+      seen.add(okey)
       functions.push({
         name,
-        start: Math.max(1, Number(f && f.start) || 1),
+        start,
         end: Math.max(1, Number(f && f.end) || 1),
         signature: String((f && f.signature) || ''),
         summary: String((f && f.summary) || ''),
         // flow 保持原始值(新格式为数组),严禁 String() 强转
         flow: (f && f.flow) || '',
         formula: String((f && f.formula) || ''),
+        okey,
       })
     }
     functions.sort((a, b) => a.start - b.start || a.end - b.end)
@@ -387,7 +468,7 @@ export function apply(ctx) {
     return {
       functions,
       edgeSet,
-      warnings: [],
+      failures: [],
       chunks: 1,
       route: provider + '/' + model,
     }
@@ -400,7 +481,7 @@ export function apply(ctx) {
     return {
       functions: explainRes.functions,
       edgeSet: explainRes.edgeSet,
-      warnings: outlineRes.warnings.concat(explainRes.warnings),
+      failures: outlineRes.failures.concat(explainRes.failures),
       chunks: explainRes.windows,
       route: outlineRes.route || 'unknown',
     }
@@ -1039,9 +1120,10 @@ export function apply(ctx) {
           send(res, 200, { binary: true, size })
           return
         }
-        // 命中缓存直接返回(缓存值可能是 data 或 in-flight promise)
+        // 命中缓存直接返回(缓存值可能是 data 或 in-flight promise);
+        // retry 请求不直接吃缓存,继续走下面的补全分支
         const hit = cache.get(path)
-        if (hit && hit.mtime === mtime && !body.refresh) {
+        if (hit && hit.mtime === mtime && hit.size === size && !body.refresh && !body.retry) {
           const data = hit.promise ? await hit.promise : hit.data
           send(res, 200, data)
           return
@@ -1057,15 +1139,172 @@ export function apply(ctx) {
         const baseName = path.split(/[\\/]/).pop()
         const langHint = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : ''
         const lines = content.replace(/\r\n/g, '\n').split('\n')
+
+        // 组装客户端负载:okey(内部稳定标识)剥离,对外以 id 暴露,
+        // 客户端 React 用 id 做 key,补全合并时已渲染卡片原地更新不重挂
+        const finishData = (functions, edgeSet, infoWarnings, failures, chunks, route) => {
+          const callGraph = buildCallGraph(functions, edgeSet)
+          const strip = (f) => {
+            const out = {
+              id: f.okey,
+              name: f.name,
+              start: f.start,
+              end: f.end,
+              signature: f.signature || '',
+              summary: f.summary,
+              flow: f.flow,
+              formula: f.formula,
+            }
+            // 客户端 stepsOf 优先读 flowSteps(锚定后的步骤),必须保留
+            if (Array.isArray(f.flowSteps)) out.flowSteps = f.flowSteps
+            return out
+          }
+          return {
+            path,
+            functions: functions.map(strip),
+            callGraph,
+            warnings: infoWarnings,
+            failedGroups: failures.map((g) => ({
+              phase: g.phase,
+              from: g.from,
+              to: g.to,
+              funcs: (g.funcs || []).map(strip),
+              text: g.text,
+            })),
+            chunks,
+            model: route || 'unknown',
+          }
+        }
+
+        // 定向补全:只对失败窗口重新调用模型,成功组一个 token 都不再花。
+        //  - outline 失败:重跑该清单窗口,新发现的函数补解读后追加合并
+        //  - explain 失败:重跑该窗口,按 okey 原位写回对应函数
+        // 完成后重跑全部确定性流水线(行号修正/步骤锚定/调用边/调用图)
+        const retryFailed = async (hitEntry, retryLines, retryBase, retryHint) => {
+          const ctx = hitEntry.ctx
+          const funcs = ctx.functions
+          const edgeSet = new Set(ctx.edgeSet)
+          const outlineJobs = ctx.failures.filter((g) => g.phase === 'outline')
+          const explainJobs = ctx.failures.filter((g) => g.phase === 'explain')
+          const remaining = []
+
+          for (const g of outlineJobs) {
+            const from = Math.min(Math.max(1, g.from), retryLines.length)
+            const to = Math.min(Math.max(from, g.to), retryLines.length)
+            try {
+              const code = retryLines.slice(from - 1, to).join('\n')
+              const { text } = await llmCall(OUTLINE_PROMPT,
+                outlineUserText(retryBase, retryHint, from, to, code), OUTLINE_MAX_TOKENS)
+              const parsed = parseJson(text)
+              const existing = new Set(funcs.map((f) => f.okey))
+              const fresh = []
+              for (const f of (Array.isArray(parsed.functions) ? parsed.functions : [])) {
+                const name = String((f && f.name) || '').trim()
+                if (!name) continue
+                const start = Math.max(1, Number(f && f.start) || 1)
+                const okey = name + '#' + start
+                if (existing.has(okey)) continue
+                existing.add(okey)
+                fresh.push({
+                  name,
+                  start,
+                  end: Math.max(1, Number(f && f.end) || 1),
+                  signature: String((f && f.signature) || ''),
+                  okey,
+                })
+              }
+              if (fresh.length > 0) {
+                const res = await explain(retryLines, fresh, retryBase, retryHint)
+                funcs.push(...res.functions)
+                for (const key of res.edgeSet) edgeSet.add(key)
+                remaining.push(...res.failures)
+              }
+              // 解析成功但未发现新函数:视为该窗口已解决(可能确实没有函数)
+            } catch (err) {
+              remaining.push({
+                phase: 'outline',
+                from,
+                to,
+                funcs: [],
+                text: '第 ' + from + ' 行起的函数清单失败: ' + message(err),
+              })
+            }
+          }
+
+          let rCursor = 0
+          const worker = async () => {
+            while (rCursor < explainJobs.length) {
+              const g = explainJobs[rCursor]
+              rCursor++
+              const from = Math.min(Math.max(1, g.from), retryLines.length)
+              const to = Math.min(Math.max(from, g.to), retryLines.length)
+              const code = retryLines.slice(from - 1, to).join('\n')
+              const listText = g.funcs.map((f) => '- ' + f.name + ' (第 ' + f.start + ' – ' + f.end + ' 行)').join('\n')
+              try {
+                const { text } = await llmCall(EXPLAIN_PROMPT,
+                  explainUserText(retryBase, retryHint, listText, from, to, code), EXPLAIN_MAX_TOKENS)
+                const parsed = parseJson(text)
+                const fns = Array.isArray(parsed.functions) ? parsed.functions : []
+                const byKey = new Map(funcs.map((f) => [f.okey, f]))
+                for (let k = 0; k < fns.length && k < g.funcs.length; k++) {
+                  const target = byKey.get(g.funcs[k].okey)
+                  if (!target) continue
+                  const f = fns[k]
+                  target.summary = String((f && f.summary) || '')
+                  target.flow = (f && f.flow) || ''
+                  target.formula = String((f && f.formula) || '')
+                }
+                collectEdges(parsed, edgeSet)
+              } catch (err) {
+                remaining.push({
+                  phase: 'explain',
+                  from,
+                  to,
+                  funcs: g.funcs,
+                  text: '第 ' + from + ' 行起的一组函数解读失败: ' + message(err),
+                })
+              }
+            }
+          }
+          await Promise.all(Array.from({ length: Math.min(EXPLAIN_CONCURRENCY, explainJobs.length) }, () => worker()))
+
+          correctRanges(funcs, retryLines, retryHint)
+          normalizeFlowSteps(funcs)
+          anchorFlowSteps(funcs, retryLines)
+          for (const key of scanEdges(funcs, retryLines)) edgeSet.add(key)
+          const data = finishData(funcs, edgeSet, ctx.infoWarnings, remaining, ctx.chunks, ctx.route || 'unknown')
+          hitEntry.data = data
+          hitEntry.ctx = {
+            functions: funcs,
+            edgeSet,
+            infoWarnings: ctx.infoWarnings,
+            failures: remaining,
+            chunks: ctx.chunks,
+            route: ctx.route,
+          }
+          return data
+        }
+
+        // 定向补全分支:缓存命中、文件未变(路径+mtime+大小一致)且有失败组
+        // 才走;缓存丢失(如重启 harness)或文件已变时无法安全合并,退化为
+        // 全量解读,客户端无感
+        if (body.retry && !body.refresh && hit && hit.mtime === mtime && hit.size === size && hit.ctx
+          && Array.isArray(hit.ctx.failures) && hit.ctx.failures.length > 0 && hit.data) {
+          const data = await retryFailed(hit, lines, baseName, langHint)
+          send(res, 200, data)
+          return
+        }
+
         const generate = async () => {
           let result
+          const infoWarnings = []
           if (lines.length <= SINGLE_CALL_MAX_LINES) {
             try {
               result = await analyzeSingle(lines, baseName, langHint)
             } catch (err) {
               // 单次调用失败(如输出超限、未识别到函数)时自动回退到分段解读
               result = await analyzeChunked(lines, baseName, langHint)
-              result.warnings.unshift('单次解读失败,已自动回退分段解读: ' + message(err))
+              infoWarnings.push('单次解读失败,已自动回退分段解读: ' + message(err))
             }
           } else {
             result = await analyzeChunked(lines, baseName, langHint)
@@ -1073,9 +1312,9 @@ export function apply(ctx) {
           // 仍为空:用正则判断文件到底像不像代码,给出可操作的提示
           if (result.functions.length === 0) {
             if (looksLikeCode(content)) {
-              result.warnings.push('该文件疑似代码,但模型未识别到函数;可点「重新解读」重试')
+              infoWarnings.push('该文件疑似代码,但模型未识别到函数;可点「重新解读」重试')
             } else {
-              result.warnings.push('该文件看起来不是代码(纯文本/配置),没有函数是正常的')
+              infoWarnings.push('该文件看起来不是代码(纯文本/配置),没有函数是正常的')
             }
           }
           // 用签名反查修正行号(模型数行不准),再夹紧区间
@@ -1085,22 +1324,37 @@ export function apply(ctx) {
           // 调用边 = 模型报告 ∪ 程序化扫描(补全模型漏掉的调用关系)
           const scanned = scanEdges(result.functions, lines)
           for (const key of scanned) result.edgeSet.add(key)
-          const callGraph = buildCallGraph(result.functions, result.edgeSet)
           return {
-            path,
             functions: result.functions,
-            callGraph,
-            warnings: result.warnings,
+            edgeSet: result.edgeSet,
+            infoWarnings,
+            failures: result.failures,
             chunks: result.chunks,
-            model: result.route || 'unknown',
+            route: result.route || 'unknown',
+            size,
           }
         }
         // LRU 上限:长期多项目使用不无限膨胀
         if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value)
         const entry = { mtime, promise: null }
-        entry.promise = generate().then((data) => {
+        entry.promise = generate().then((res) => {
+          const data = finishData(res.functions, res.edgeSet, res.infoWarnings, res.failures, res.chunks, res.route)
           // 生成期间文件可能又变过(新 mtime 产生新 entry):旧结果不覆盖
-          if (cache.get(path) === entry) cache.set(path, { mtime, data })
+          if (cache.get(path) === entry) {
+            cache.set(path, {
+              mtime,
+              size: res.size,
+              data,
+              ctx: {
+                functions: res.functions,
+                edgeSet: res.edgeSet,
+                infoWarnings: res.infoWarnings,
+                failures: res.failures,
+                chunks: res.chunks,
+                route: res.route,
+              },
+            })
+          }
           return data
         }).catch((err) => {
           if (cache.get(path) === entry) cache.delete(path)

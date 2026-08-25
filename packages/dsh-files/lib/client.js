@@ -455,7 +455,12 @@ html[data-cg-panel-open] [data-phase=active] {
 @keyframes cg-dot-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: .4; }
   30% { transform: translateY(-6px); opacity: 1; }
-}`;
+}
+/* 解读失败报错框:文本居左,「补全解读」按钮贴最右;补全中按钮原位变三点 */
+.cg-warnbox { display: flex; align-items: center; gap: 10px; }
+.cg-warn-text { flex: 1 1 auto; min-width: 0; }
+.cg-retry-btn { white-space: nowrap; }
+.cg-retry-dots { flex: none; padding: 2px 8px; }`;
 
 		// ---------- fetch api ----------
 		// 所有请求显式携带 root(文件树根):宿主用它做工作区包含校验
@@ -464,10 +469,10 @@ html[data-cg-panel-open] [data-phase=active] {
 			list: (path) => fetch('/plugins/dsh-files/list?path=' + encodeURIComponent(path) + '&root=' + encodeURIComponent(store.rootPath || '')).then((r) => r.json()),
 			search: (root, q) => fetch('/plugins/dsh-files/search?root=' + encodeURIComponent(root) + '&q=' + encodeURIComponent(q)).then((r) => r.json()),
 			read: (path, root) => fetch('/plugins/dsh-files/read?path=' + encodeURIComponent(path) + '&root=' + encodeURIComponent(root || store.rootPath || '')).then((r) => r.json()),
-			explain: (path, refresh, root) => fetch('/plugins/dsh-files/explain', {
+			explain: (path, refresh, retry, root) => fetch('/plugins/dsh-files/explain', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ path, refresh: !!refresh, root: root || store.rootPath || '' }),
+				body: JSON.stringify({ path, refresh: !!refresh, retry: !!retry, root: root || store.rootPath || '' }),
 			}).then((r) => r.json()),
 		};
 
@@ -2413,9 +2418,9 @@ html[data-cg-panel-open] [data-phase=active] {
 			const applyExplainResult = (path, res) => {
 				patchTab(path, (f) => {
 					if (!f) return f;
-					if (res && res.error) return { ...f, explaining: false, explainError: res.error };
-					if (res && res.binary) return { ...f, explaining: false, explainError: '二进制文件，无法解读' };
-					return { ...f, explaining: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], chunks: res.chunks || 0 };
+					if (res && res.error) return { ...f, explaining: false, retrying: false, explainError: res.error };
+					if (res && res.binary) return { ...f, explaining: false, retrying: false, explainError: '二进制文件，无法解读' };
+					return { ...f, explaining: false, retrying: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], failedGroups: res.failedGroups || [], chunks: res.chunks || 0 };
 				});
 			};
 			const failExplain = (path, err) => {
@@ -2619,14 +2624,14 @@ html[data-cg-panel-open] [data-phase=active] {
 			// (文件可能已在外部编辑器里改过)。仅代码类文件提供该按钮
 			const startExplain = (f) => {
 				if (!f || f.reading || f.error || f.tooLarge || f.binary || !isExplainable(f.name)) return;
-				if (f.explaining) {
-					// 生成仍在进行:只重新展开板块等结果,不重复请求
+				if (f.explaining || f.retrying) {
+					// 生成/补全仍在进行:只重新展开板块等结果,不重复请求
 					patchTab(f.path, (t) => t ? { ...t, guideOn: true } : t);
 					return;
 				}
 				const path = f.path;
 				const force = !!f.guideOn; // 已打开再点 = 重新解读
-				patchTab(path, (t) => t ? { ...t, guideOn: true, explaining: true, explainError: null, warnings: [] } : t);
+				patchTab(path, (t) => t ? { ...t, guideOn: true, explaining: true, retrying: false, explainError: null, warnings: [], failedGroups: [] } : t);
 				// 先刷新源码内容(文件可能在外部被改过);内容变化时清掉行号相关状态
 				api.read(path, f.root || rootPath).then((res) => {
 					if (!res || res.error || res.tooLarge) return;
@@ -2638,7 +2643,28 @@ html[data-cg-panel-open] [data-phase=active] {
 					// 行号可能整体失效:清空当前页的跳转历史与高亮
 					if (cur && cur.content !== res.content) resetFocusState();
 				}).catch(() => { /* 读失败不阻塞解读 */ });
-				api.explain(path, force, f.root || rootPath).then((res) => applyExplainResult(path, res)).catch((err) => failExplain(path, err));
+				api.explain(path, force, false, f.root || rootPath).then((res) => applyExplainResult(path, res)).catch((err) => failExplain(path, err));
+			};
+			// 「补全解读」:只重跑失败组,不触发鲸鱼娘看板(独立 retrying 态)。
+			// 补全期间已有解读保持可见、可滚动;成功后按 id 原位补齐卡片,
+			// 完成/失败都不弹状态提示——报错框与卡片就地反映结果:
+			// 成功则失败框消失/计数减少,失败则框保留、按钮恢复可再点
+			const retryFailedGroups = () => {
+				const f = file;
+				if (!f || f.retrying || f.explaining) return;
+				const path = f.path;
+				patchTab(path, (t) => t ? { ...t, retrying: true } : t);
+				api.explain(path, false, true, f.root || rootPath).then((res) => {
+					if (res && res.error) {
+						// host 出错:保持已有解读,按钮恢复,静默
+						patchTab(path, (t) => t ? { ...t, retrying: false } : t);
+						return;
+					}
+					patchTab(path, (t) => t ? { ...t, retrying: false, functions: res.functions || [], callGraph: res.callGraph || '', model: res.model || '', warnings: res.warnings || [], failedGroups: res.failedGroups || [], chunks: res.chunks || 0 } : t);
+				}).catch(() => {
+					// 网络异常:保持已有解读,按钮恢复,静默
+					patchTab(path, (t) => t ? { ...t, retrying: false } : t);
+				});
 			};
 			const runExplain = () => { if (file) startExplain(file) };
 			// 解读框右上角关闭:只收起解读板块,源码保持打开;
@@ -3215,20 +3241,43 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (file.explainError) return react.createElement('div', { className: 'cg-error' }, '解读失败：\n' + file.explainError + '\n\n可点击右上角「重新解读」重试');
 				if (file.error || file.tooLarge) return null;
 				const fns = file.functions || [];
+				// 失败组与提示信息分开:新 host 返回结构化 failedGroups(warnings 只
+				// 放提示);旧 host 只有 warnings,此时 warnings 即失败组文本
+				const structured = Array.isArray(file.failedGroups);
+				const failedGroups = structured ? file.failedGroups : [];
+				const groupWarnCount = structured ? failedGroups.length : (file.warnings || []).length;
+				const firstGroupText = structured ? (failedGroups.length > 0 ? failedGroups[0].text : '') : ((file.warnings && file.warnings[0]) || '');
+				const infoWarnings = structured ? (file.warnings || []) : [];
+				// 报错框:文本在左,「补全解读」按钮在最右;补全中按钮位置变三点跳动
+				const warnBox = () => {
+					if (groupWarnCount === 0 && infoWarnings.length === 0) return null;
+					const btn = failedGroups.length > 0
+						? (file.retrying
+							? react.createElement('span', { className: 'cg-loading-dots cg-retry-dots', title: '正在补全…' },
+								react.createElement('i'), react.createElement('i'), react.createElement('i'))
+							: react.createElement('button', { className: 'cg-btn cg-retry-btn', onClick: retryFailedGroups }, '补全解读'))
+						: null;
+					const head = groupWarnCount > 0 ? '⚠ ' + groupWarnCount + ' 组函数解读失败' + (firstGroupText ? '\n' + firstGroupText : '') : '';
+					const info = infoWarnings.length > 0 ? (head ? '\n' : '') + infoWarnings.join('\n') : '';
+					return react.createElement('div', { className: 'cg-error cg-warnbox', style: { padding: '6px 4px 6px 10px' } },
+						react.createElement('div', { className: 'cg-warn-text' }, (head + info) || '⚠ 部分解读失败'),
+						btn,
+					);
+				};
 				if (fns.length === 0) {
 					return react.createElement('div', null,
-						file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '8px 12px' } }, '⚠ ' + file.warnings.join('\n')) : null,
+						warnBox(),
 						react.createElement('div', { className: 'cg-empty' }, '没有识别到函数。若这是代码文件，点右上角「重新解读」重试'),
 					);
 				}
 				return react.createElement('div', { className: 'cg-guide', ref: guideRef, onClick: onGuideClick },
-					file.warnings && file.warnings.length > 0 ? react.createElement('div', { className: 'cg-error', style: { padding: '4px 2px 8px' } }, '⚠ ' + file.warnings.length + ' 组函数解读失败，可点击「重新解读」\n' + file.warnings[0]) : null,
+					warnBox(),
 					fns.map((f, i) => {
 						const steps = stepsOf(f);
 						const legacyHtml = !steps && f.flow ? renderFlowMd(f.flow) : '';
 						const flowBroken = !steps && !!f.flow && (!legacyHtml || legacyHtml.includes('[object Object]'));
 						return react.createElement('div', {
-							key: i,
+							key: f.id || i,
 							className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
 							'data-idx': i,
 						},
