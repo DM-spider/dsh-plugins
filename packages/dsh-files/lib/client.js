@@ -2093,8 +2093,12 @@ html[data-cg-panel-open] [data-phase=active] {
 				const end = Math.min(total, Math.ceil((top + viewH) / LINE_H) + VIRT_OVERSCAN + 1);
 				setVrange((v) => (v.start === start && v.end === end ? v : { start, end }));
 			};
+			// 滚动动画进行中标记:animateScroll 的 onFrame 已逐帧 seedVrange,
+			// onCodeScroll 不再重复调用,避免同帧双重 setState
+			const scrollAnimatingRef = react.useRef(false);
 			// 源码区滚动 → 虚拟滚动范围更新(rAF 节流)
 			const onCodeScroll = () => {
+				if (scrollAnimatingRef.current) return;
 				if (codeScrollRafRef.current !== null) return;
 				codeScrollRafRef.current = requestAnimationFrame(() => {
 					codeScrollRafRef.current = null;
@@ -2702,6 +2706,11 @@ html[data-cg-panel-open] [data-phase=active] {
 				setActive(null);
 				setFlash(null);
 				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
+				// 关闭解读后源码区宽度变化,重算虚拟窗口避免底部空白
+				requestAnimationFrame(() => {
+					const pane = codePaneRef.current;
+					if (pane) seedVrange(pane.scrollTop);
+				});
 			};
 			// 关闭页签:若关的是当前页,自动切到相邻页签;全部关闭回到 tree-only。
 			// 预览 tab 不受影响(保留在页签栏)
@@ -2766,13 +2775,15 @@ html[data-cg-panel-open] [data-phase=active] {
 
 			// JS 平滑滚动:不依赖原生 smooth(系统关动画效果时原生会瞬跳)。
 			// wheel/触摸/指针按下立即取消,用户手动滚动优先;到位回调 onArrive
+			// onFrame:可选逐帧回调,用于中距离跳转时同步虚拟滚动窗口
 			const scrollAnims = new WeakMap();
-			const animateScroll = (el, targetTop, onArrive) => {
+			const animateScroll = (el, targetTop, onArrive, onFrame) => {
 				const prev = scrollAnims.get(el);
 				if (prev) prev.cancel();
 				const startTop = el.scrollTop;
 				const delta = targetTop - startTop;
 				if (Math.abs(delta) < 1) { if (onArrive) onArrive(); return }
+				if (onFrame) scrollAnimatingRef.current = true;
 				const t0 = performance.now();
 				const dur = Math.min(600, Math.max(220, Math.abs(delta) * 0.35));
 				let raf = 0;
@@ -2780,6 +2791,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const stop = () => {
 					if (done) return;
 					done = true;
+					if (onFrame) scrollAnimatingRef.current = false;
 					cancelAnimationFrame(raf);
 					el.removeEventListener('wheel', stop);
 					el.removeEventListener('touchstart', stop);
@@ -2793,7 +2805,9 @@ html[data-cg-panel-open] [data-phase=active] {
 					const p = Math.min(1, (now - t0) / dur);
 					// easeInOutCubic:起止缓、中段快
 					const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-					el.scrollTop = startTop + delta * eased;
+					const newTop = startTop + delta * eased;
+					el.scrollTop = newTop;
+					if (onFrame) onFrame(newTop);
 					if (p < 1) { raf = requestAnimationFrame(step); return }
 					stop();
 					if (onArrive) onArrive();
@@ -2805,18 +2819,38 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 
 			// 行号→滚动位置平滑滑到位后回调 onArrive(闪烁不提前开始);
-			// 虚拟滚动下目标行可能未渲染,只能数学换算
+			// 虚拟滚动下目标行可能未渲染,只能数学换算。
+			// 三档策略:
+			//   ≤2 倍视窗  → 原有平滑滚动
+			//   2~5 倍视窗 → 平滑滚动 + 逐帧 seedVrange(虚拟窗口追得上)
+			//   >5 倍视窗  → 瞬移到目标上方 1 屏 + 短距离平滑滑入(有到达感)
+			const jumpRafRef = react.useRef(null);
 			const jumpToLine = (start, onArrive) => {
+				if (jumpRafRef.current !== null) {
+					cancelAnimationFrame(jumpRafRef.current);
+					jumpRafRef.current = null;
+				}
 				const pane = codePaneRef.current;
 				if (!pane) { if (onArrive) onArrive(); return }
 				const top = Math.max(0, (start - 1) * LINE_H - Math.floor(pane.clientHeight * 0.2));
-				// 远距离跳转不做平滑滚动:虚拟窗口追不上高速滚动,途中整屏
-				// 只剩占位 spacer(深色底),观感是"代码黑屏/没加载"。长跳直接
-				// 落位 + 同帧预渲染目标窗口,下一帧即有字;近距离仍平滑
-				if (Math.abs(top - pane.scrollTop) > pane.clientHeight * 2) {
+				const dist = Math.abs(top - pane.scrollTop);
+				const viewH = pane.clientHeight;
+				if (dist > viewH * 5) {
+					// 远距离:瞬移到目标上方 1 屏,再短距离平滑滑入
+					const preTop = Math.max(0, top - viewH);
+					seedVrange(preTop);
+					pane.scrollTop = preTop;
+					jumpRafRef.current = requestAnimationFrame(() => {
+						jumpRafRef.current = null;
+						seedVrange(top);
+						animateScroll(pane, top, onArrive, seedVrange);
+					});
+					return
+				}
+				if (dist > viewH * 2) {
+					// 中距离:平滑滚动 + 逐帧同步虚拟窗口
 					seedVrange(top);
-					pane.scrollTop = top;
-					if (onArrive) onArrive();
+					animateScroll(pane, top, onArrive, seedVrange);
 					return
 				}
 				animateScroll(pane, top, onArrive);
@@ -3091,7 +3125,9 @@ html[data-cg-panel-open] [data-phase=active] {
 					// 面板收起时点代码行 = 纯脚本浏览(Ctrl+点击/Alt+←/→ 照常)
 					setActive(i);
 					setTab('guide');
-					setTimeout(() => flashGuideItem(i, lineNo), 80);
+					// 等 React 渲染提交后再查 DOM(rAF 在 paint 前触发,
+					// 比固定 80ms 更可靠:不受设备性能影响)
+					requestAnimationFrame(() => requestAnimationFrame(() => flashGuideItem(i, lineNo)));
 				} else {
 					setActive(null);
 				}
@@ -3165,6 +3201,25 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 				setDrag(null);
 			};
+			const resizeMoveRef = react.useRef(onResizeMove);
+			resizeMoveRef.current = onResizeMove;
+			const endDragRef = react.useRef(endDrag);
+			endDragRef.current = endDrag;
+			// window 级兜底:指针离开窗口/alt-tab 时 overlay 的 pointerleave
+			// 不一定触发,通过 window pointermove/pointerup 保证拖拽不粘住
+			react.useEffect(() => {
+				if (!drag) return;
+				const onMove = (e) => resizeMoveRef.current(e);
+				const onUp = () => endDragRef.current();
+				window.addEventListener('pointermove', onMove);
+				window.addEventListener('pointerup', onUp);
+				window.addEventListener('pointercancel', onUp);
+				return () => {
+					window.removeEventListener('pointermove', onMove);
+					window.removeEventListener('pointerup', onUp);
+					window.removeEventListener('pointercancel', onUp);
+				};
+			}, [!!drag]);
 
 			const renderTree = () => {
 				if (!tree || !tree.rootPath) return react.createElement('div', { className: 'cg-empty' }, '未找到工作区');
