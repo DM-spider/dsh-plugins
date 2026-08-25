@@ -1253,7 +1253,7 @@ html[data-cg-panel-open] [data-phase=active] {
 
 		// ---------- 阶段1:文件内搜索 / 虚拟滚动辅助 ----------
 		const LINE_H = 21; // .cg-line 行高(CSS 固定 line-height: 21px)
-		const VIRT_OVERSCAN = 10; // 虚拟滚动上下缓冲行数
+		const VIRT_OVERSCAN = 15; // 虚拟滚动上下缓冲行数(盖住平滑滚动的一帧窗口延迟)
 		// 文件内搜索:返回 [{ line(1-based), start(列, 0-based), len, occ(行内第几个) }]
 		const computeFindMatches = (content, query, caseSensitive, maxLines) => {
 			const q = String(query || '');
@@ -2082,6 +2082,17 @@ html[data-cg-panel-open] [data-phase=active] {
 					if (active !== mdActiveIdRef.current) { mdActiveIdRef.current = active; setMdActiveId(active) }
 				});
 			};
+			// 虚拟滚动窗口按 scrollTop 重算;跳转可先行调用,让目标窗口与
+			// 落位在同帧渲染,避免"滚到一片空占位 spacer(深色底、看似黑屏)"
+			const seedVrange = (top) => {
+				const total = Math.min(codeTotalLines, MAX_LINES);
+				if (total <= 0) return;
+				const pane = codePaneRef.current;
+				const viewH = pane ? pane.clientHeight : 600;
+				const start = Math.max(0, Math.floor(top / LINE_H) - VIRT_OVERSCAN);
+				const end = Math.min(total, Math.ceil((top + viewH) / LINE_H) + VIRT_OVERSCAN + 1);
+				setVrange((v) => (v.start === start && v.end === end ? v : { start, end }));
+			};
 			// 源码区滚动 → 虚拟滚动范围更新(rAF 节流)
 			const onCodeScroll = () => {
 				if (codeScrollRafRef.current !== null) return;
@@ -2089,11 +2100,7 @@ html[data-cg-panel-open] [data-phase=active] {
 					codeScrollRafRef.current = null;
 					const pane = codePaneRef.current;
 					if (!pane) return;
-					const total = Math.min(codeTotalLines, MAX_LINES);
-					if (total <= 0) return;
-					const start = Math.max(0, Math.floor(pane.scrollTop / LINE_H) - VIRT_OVERSCAN);
-					const end = Math.min(total, Math.ceil((pane.scrollTop + pane.clientHeight) / LINE_H) + VIRT_OVERSCAN + 1);
-					setVrange((v) => (v.start === start && v.end === end ? v : { start, end }));
+					seedVrange(pane.scrollTop);
 				});
 			};
 			const [active, setActive] = react.useState(null); // function index
@@ -2369,12 +2376,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			// 不闪空白帧(滚动恢复的 layout effect 声明在前,先执行)
 			react.useLayoutEffect(() => {
 				const pane = codePaneRef.current;
-				const top = pane ? pane.scrollTop : 0;
-				const viewH = pane ? pane.clientHeight : 600;
-				const total = Math.min(codeTotalLines, MAX_LINES);
-				const start = Math.max(0, Math.floor(top / LINE_H) - VIRT_OVERSCAN);
-				const end = Math.min(total, Math.ceil((top + viewH) / LINE_H) + VIRT_OVERSCAN + 1);
-				setVrange({ start, end });
+				seedVrange(pane ? pane.scrollTop : 0);
 			}, [file && file.path, file && file.content, file && file.view]);
 			react.useEffect(() => { mdActiveIdRef.current = null; setMdActiveId(null) }, [file && file.path]);
 			// Ctrl+F:源码视图接管为"文件内查找"(md 预览仍走浏览器默认行为)
@@ -2808,6 +2810,15 @@ html[data-cg-panel-open] [data-phase=active] {
 				const pane = codePaneRef.current;
 				if (!pane) { if (onArrive) onArrive(); return }
 				const top = Math.max(0, (start - 1) * LINE_H - Math.floor(pane.clientHeight * 0.2));
+				// 远距离跳转不做平滑滚动:虚拟窗口追不上高速滚动,途中整屏
+				// 只剩占位 spacer(深色底),观感是"代码黑屏/没加载"。长跳直接
+				// 落位 + 同帧预渲染目标窗口,下一帧即有字;近距离仍平滑
+				if (Math.abs(top - pane.scrollTop) > pane.clientHeight * 2) {
+					seedVrange(top);
+					pane.scrollTop = top;
+					if (onArrive) onArrive();
+					return
+				}
 				animateScroll(pane, top, onArrive);
 			};
 
