@@ -292,6 +292,20 @@ window.__ModuleLoader__.load({
 			{ id: 'pycharmdark', label: 'PyCharm Dark', tokens: pairOf(DARK_PYCHARM) },
 		];
 
+		// ---------- 首屏引导样式缓存 ----------
+		// 宿主侧(tapIndex)注入的解析期引导脚本会读取这份缓存,把选中调色板
+		// 提前到首帧绘制;每次物化都重写,调色板改动后最多一屏旧色。
+		// 键名必须与 lib/index.js 的引导脚本一致。
+		const BOOT_CSS_KEY = "dsh-themes.boot-css";
+		const bootCssOf = (tokens) => "html body[data-ds-dark-theme]{" + Object.entries(tokens).map(([k, v]) => `${k}:${v.dark}`).join(";") + "}";
+		const cacheBootCss = () => {
+			try {
+				const map = {};
+				for (const p of PALETTES) map[p.id] = bootCssOf(p.tokens);
+				localStorage.setItem(BOOT_CSS_KEY, JSON.stringify(map));
+			} catch (_) { /* 存储失败仅失去首屏提速 */ }
+		};
+
 		// 选择持久化:'dsh-themes.palette' = 主题 id 或空(默认)。
 		// 兼容旧包:dsh-theme-onedarkpro.enabled === '0' 视为「未启用」
 		const KEY = "dsh-themes.palette";
@@ -304,19 +318,70 @@ window.__ModuleLoader__.load({
 			return 'onedarkpro'; // 老用户缺省 = One Dark Pro,保持升级无缝
 		};
 
-		exports.inject = ["theme", "slots"];
+		exports.inject = ["theme", "slots", "settingsScope"];
 		exports.apply = function (ctx) {
 			const theme = ctx.theme;
 			let current = readPalette();
 			let off = null;
+			let layerLive = false;
+			const boot = typeof window !== "undefined" ? (window.__DSH_THEMES_BOOT__ || null) : null;
+
+			cacheBootCss();
+
+			const disarmBootGuard = () => {
+				if (boot !== null && typeof boot.release === "function") boot.release();
+			};
+			const dropBootSheet = () => {
+				const el = document.getElementById("dsh-themes-boot");
+				if (el !== null) el.remove();
+			};
+			const removePalette = () => { if (off !== null) { off(); off = null } layerLive = false };
 			const applyPalette = () => {
 				removePalette();
 				const p = PALETTES.find((x) => x.id === current);
-				if (p) off = theme.overrideTokens("dsh-themes", p.tokens);
+				if (p) {
+					off = theme.overrideTokens("dsh-themes", p.tokens);
+					layerLive = true;
+					disarmBootGuard();
+					dropBootSheet();
+				}
 			};
-			const removePalette = () => { if (off !== null) { off(); off = null } };
-			applyPalette();
-			ctx.effect(() => () => removePalette(), "dsh-themes: 卸载时撤销覆盖");
+
+			// 引导脚本在场时,覆盖层注册延迟到「外观偏好已被采纳」之后:采纳前
+			// 主题服务按 system(OS)解析,若 OS 是浅色,提前注册会让浅色档 token
+			// 被写进内联样式并盖过引导样式,把白帧带回来。偏好为 system 时不会有
+			// 采纳事件,引导样式将长期承担调色板(与属性联动,行为一致)。
+			ctx.effect(() => {
+				if (boot === null) { applyPalette(); return; }
+				let adopted = false;
+				const offEvent = ctx.on("theme/change", (snapshot) => {
+					if (adopted || snapshot.preference === "system") return;
+					adopted = true;
+					if (current !== "") applyPalette(); else disarmBootGuard();
+				});
+				const snap = theme.getTheme();
+				if (snap.preference !== "system") {
+					adopted = true;
+					if (current !== "") applyPalette(); else disarmBootGuard();
+				}
+				return () => offEvent();
+			}, "dsh-themes: 偏好采纳后注册覆盖层");
+
+			// 设置读取完成后释放引导守卫(偏好为 system 时不会有采纳事件,
+			// 守卫必须在此之前停用,否则会挡住后续 OS 深浅切换)。
+			ctx.effect(() => {
+				if (boot === null) return;
+				const scope = ctx.settingsScope.bind({ namespace: "ui-theme" });
+				const offSub = scope.subscribe(() => {
+					const s = scope.getSnapshot();
+					if (s.status !== "ready" && s.status !== "unavailable") return;
+					disarmBootGuard();
+					offSub();
+				});
+				return () => offSub();
+			}, "dsh-themes: 设置就绪后释放引导守卫");
+
+			ctx.effect(() => () => { removePalette(); dropBootSheet(); }, "dsh-themes: 卸载时撤销覆盖");
 
 			// 设置 → 通用:「主题」行,每个主题一个方块,点击选中/再点取消
 			const Row = () => {

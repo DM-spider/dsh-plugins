@@ -32,6 +32,23 @@
 - **设置不受影响**：「外观」仍显示浅色/深色/跟随系统三档；
 - **偏好照常持久化**：本包自存主题选择（localStorage），重启自动恢复。
 
+### 首屏无闪变
+
+打开页面 / Ctrl+F5 时不会先闪黑再闪白再落到主题，而是首帧即主题色：
+
+- **首帧即主题**：host 半部通过 `webServer.tapIndex` 在核心引导脚本后注入解析期
+  脚本，把客户端缓存的调色板样式表（`dsh-themes.boot-css`，每次物化重写）提前挂载，
+  首个绘制就带主题色；
+- **压掉白帧**：核心主题服务在异步读到持久化偏好前会按 `system`（跟随 OS）解析，
+  若 OS 是浅色而偏好是深色，会出现一帧内置浅色。引导脚本用 MutationObserver 在
+  解析期就守住 `data-ds-dark-theme` + `color-scheme`，直到客户端确认偏好已采纳
+  （或 8s 兜底释放），微任务级修正保证白帧不落屏；
+- **覆盖层延迟注册**：偏好采纳前不调用 `overrideTokens`，避免浅色档 token 被
+  提前写成内联样式盖过引导样式；偏好为「跟随系统」时引导样式长期承担调色板，
+  与属性联动、OS 切换行为一致。
+
+首次更新后的第一次加载会写入引导缓存，再刷新一次即可看到首帧主题色。
+
 ## 临时停用
 
 在设置行点掉选中的方块即可；或控制台执行 `localStorage.setItem('dsh-themes.palette', '')`。
@@ -44,12 +61,13 @@ dsh plugin --profile web add D:\WorkingSet\dsh-plugins\packages\dsh-themes
 pnpm install
 ```
 
-安装后重启 DSH；之后改 `lib/client.js` 只需 Ctrl+F5 刷新 GUI 页面。
+安装后重启 DSH；之后改 `lib/client.js` 只需 Ctrl+F5 刷新 GUI 页面，改 `lib/index.js`
+（host 半部）则需要重启 DSH 后再刷新。
 
 ## 结构
 
-- `lib/index.js` — host 半部（空壳，本插件无宿主逻辑）
-- `lib/client.js` — web client 半部：两套 `--dsw-alias-*` / `--shiki-*` 双档覆盖表 + 深色档叠加注册 + 设置页「主题」开关行
+- `lib/index.js` — host 半部：`webServer.tapIndex` 注入首屏主题引导脚本（调色板提前 + 深色守卫）
+- `lib/client.js` — web client 半部：两套 `--dsw-alias-*` / `--shiki-*` 双档覆盖表 + 深色档叠加注册 + 设置页「主题」开关行 + 引导样式缓存
 - `cordis.patch.yml` — bundle 补丁，把插件行插入 profile 的 host 组合
 
 ## 升级说明（自 dsh-theme-onedarkpro）
