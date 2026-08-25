@@ -1870,6 +1870,259 @@ html[data-cg-panel-open] [data-phase=active] {
 
 		// ---------- main panel ----------
 		const MAX_LINES = 10000;
+		const TAB_MAX = 8;
+
+		const lineFuncIndex = (fns, lineNo) => {
+			if (!fns || fns.length === 0) return null;
+			let lo = 0, hi = fns.length - 1, k = -1;
+			while (lo <= hi) {
+				const mid = (lo + hi) >> 1;
+				if (fns[mid].start <= lineNo) { k = mid; lo = mid + 1 } else hi = mid - 1;
+			}
+			if (k === -1) return null;
+			if (lineNo >= fns[k].start && lineNo <= fns[k].end) return k;
+			for (let i = 0; i <= k; i++) {
+				if (lineNo >= fns[i].start && lineNo <= fns[i].end) return i;
+			}
+			return null;
+		};
+
+		const jumpTargetLine = (fn, content) => {
+			if (!content) return fn.start;
+			const lines = contentLines(content);
+			for (let k = fn.start; k <= Math.min(lines.length, fn.start + 20); k++) {
+				if (/^\s*(?:async\s+)?def\s/.test(lines[k - 1])
+					|| /^\s*(?:export\s+)?(?:async\s+)?function\s/.test(lines[k - 1])
+					|| /^\s*(?:func|fn)\s/.test(lines[k - 1])
+					|| /^\s*class\s/.test(lines[k - 1])
+					|| /^\s*(?:const|let|var)\s/.test(lines[k - 1])) return k;
+			}
+			return fn.start;
+		};
+
+		const findVarLineIn = (name, start, end, lines) => {
+			const mkRe = (p) => new RegExp('(?<![A-Za-z0-9_$])' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])');
+			const tokenM = /^[A-Za-z_$][\w$]*/.exec(name);
+			const candidates = [name];
+			if (tokenM && tokenM[0] !== name) candidates.push(tokenM[0]);
+			const ranges = [[Math.max(1, start), Math.max(start, end)], [1, lines.length]];
+			for (const range of ranges) {
+				for (const c of candidates) {
+					const re = mkRe(c);
+					for (let i = range[0]; i <= Math.min(range[1], lines.length); i++) {
+						if (re.test(lines[i - 1])) return i;
+					}
+				}
+			}
+			return -1;
+		};
+
+		// ---------- useTabState: 页签/预览状态管理 ----------
+		const tabActions = {
+			SET_TABS: 'SET_TABS',
+			SET_ACTIVE: 'SET_ACTIVE',
+			SET_PREVIEW: 'SET_PREVIEW',
+			SET_PREVIEW_ACTIVE: 'SET_PREVIEW_ACTIVE',
+			PATCH_TAB: 'PATCH_TAB',
+			BATCH: 'BATCH',
+		};
+		const tabReducer = (state, action) => {
+			switch (action.type) {
+				case tabActions.SET_TABS:
+					return { ...state, tabs: action.tabs };
+				case tabActions.SET_ACTIVE:
+					return { ...state, activePath: action.path };
+				case tabActions.SET_PREVIEW:
+					return { ...state, preview: action.file };
+				case tabActions.SET_PREVIEW_ACTIVE:
+					return { ...state, previewActive: action.active };
+				case tabActions.PATCH_TAB: {
+					const { path, updater } = action;
+					if (state.preview && state.preview.path === path) {
+						const n = typeof updater === 'function' ? updater(state.preview) : updater;
+						return { ...state, preview: (n === null || n === false) ? null : n };
+					}
+					let hit = false;
+					const nextTabs = state.tabs.map((t) => {
+						if (t.path !== path) return t;
+						hit = true;
+						const n = typeof updater === 'function' ? updater(t) : updater;
+						return (n === null || n === false) ? null : n;
+					}).filter(Boolean);
+					if (hit) return { ...state, tabs: nextTabs };
+					return state;
+				}
+				case tabActions.BATCH: {
+					let s = state;
+					for (const a of action.actions) s = tabReducer(s, a);
+					return s;
+				}
+				default: return state;
+			}
+		};
+
+		const useTabState = (rootKey) => {
+			const [state, dispatch] = react.useReducer(tabReducer, {
+				tabs: [],
+				activePath: null,
+				preview: null,
+				previewActive: false,
+			});
+			const ref = react.useRef(state);
+			ref.current = state;
+
+			// 同步更新 ref 后再 dispatch，保证同帧后续代码读 ref 能拿到新值
+			const eagerDispatch = (action) => {
+				ref.current = tabReducer(ref.current, action);
+				dispatch(action);
+			};
+
+			const commitTabs = (tabs) => eagerDispatch({ type: tabActions.SET_TABS, tabs });
+			const setActivePath = (path) => eagerDispatch({ type: tabActions.SET_ACTIVE, path });
+			const setPreview = (file) => eagerDispatch({ type: tabActions.SET_PREVIEW, file });
+			const setPreviewActive = (active) => eagerDispatch({ type: tabActions.SET_PREVIEW_ACTIVE, active });
+			const patchTab = (path, updater) => {
+				const s = ref.current;
+				if ((s.preview && s.preview.path === path) || s.tabs.some((t) => t.path === path)) {
+					eagerDispatch({ type: tabActions.PATCH_TAB, path, updater });
+					return;
+				}
+				patchParked(path, updater);
+			};
+			const patchActive = (updater) => {
+				const s = ref.current;
+				const f = currentFile(s);
+				if (f) patchTab(f.path, updater);
+			};
+
+			const patchParked = (path, updater) => {
+				for (const [key, entry] of workspaceTabSets) {
+					if (key === rootKey) continue;
+					let changed = false;
+					let nextPv = entry.preview;
+					if (nextPv && nextPv.path === path) {
+						const n = typeof updater === 'function' ? updater(nextPv) : updater;
+						nextPv = (n === null || n === false) ? null : n;
+						changed = changed || nextPv !== entry.preview;
+					}
+					const nextTabs = entry.tabs.map((t) => {
+						if (t.path !== path) return t;
+						const n = typeof updater === 'function' ? updater(t) : updater;
+						changed = changed || n !== t;
+						return (n === null || n === false) ? null : n;
+					}).filter(Boolean);
+					if (changed) {
+						workspaceTabSets.set(key, { tabs: nextTabs, preview: nextPv, previewActive: entry.previewActive, activePath: entry.activePath });
+					}
+				}
+			};
+
+			const pruneTabs = (next) => {
+				if (next.length < TAB_MAX) return next;
+				const s = ref.current;
+				let victim = null;
+				for (const t of next) {
+					if (t.path === s.activePath) continue;
+					if (!victim || (t.lastUsed || 0) < (victim.lastUsed || 0)) victim = t;
+				}
+				return victim ? next.filter((t) => t !== victim) : next;
+			};
+
+			const batch = (...actions) => eagerDispatch({ type: tabActions.BATCH, actions });
+
+			return { state, commitTabs, setActivePath, setPreview, setPreviewActive, patchTab, patchActive, pruneTabs, batch, ref };
+		};
+		const currentFile = (s) => (s.preview && s.previewActive) ? s.preview : s.tabs.find((t) => t.path === s.activePath) || null;
+
+		const useDragResize = (fileRef) => {
+			const [drag, setDrag] = react.useState(null);
+
+			const onResizeStart = (e) => {
+				const file = fileRef.current;
+				e.preventDefault();
+				const target = file ? 'code' : 'tree';
+				const showGuide = !!(file && file.guideOn);
+				setDrag({
+					kind: 'outer',
+					target,
+					startX: e.clientX,
+					startW: target === 'code' ? effCodeOf(store.pane, showGuide) : store.pane.tree,
+					startCodeW: effCodeOf(store.pane, showGuide),
+					startGuideW: store.pane.guide,
+				});
+			};
+
+			const onDividerStart = (kind) => (e) => {
+				e.preventDefault();
+				setDrag({
+					kind,
+					startX: e.clientX,
+					startCodeW: effCodeOf(store.pane, true),
+					startTreeW: store.pane.tree,
+					startSourceW: sourceWidthOf(store.pane, true),
+				});
+			};
+
+			const dragMaxOf = (others) => Math.max(PANE_MIN_PX, window.innerWidth - 90 - others);
+
+			const onResizeMove = (e) => {
+				if (!drag) return;
+				const file = fileRef.current;
+				const dx = e.clientX - drag.startX;
+				if (drag.kind === 'outer') {
+					if (drag.target === 'tree') {
+						const w = Math.max(PANE_MIN_PX, Math.min(dragMaxOf(file ? effCodeOf(store.pane, false) + PANE_DIV_W : 0), drag.startW - dx));
+						store.pane = { ...store.pane, tree: w };
+					} else {
+						const showGuide = !!(file && file.guideOn);
+						const min = codeFloorFor(store.pane, showGuide);
+						const w = Math.max(min, Math.min(dragMaxOf(store.pane.tree + PANE_DIV_W), drag.startW - dx));
+						if (file && file.guideOn) {
+							const gRatio = drag.startGuideW / Math.max(1, drag.startCodeW - PANE_DIV_W);
+							const guideW = Math.max(PANE_MIN_PX, Math.min(Math.round((w - PANE_DIV_W) * gRatio), w - PANE_DIV_W - PANE_MIN_PX));
+							store.pane = { ...store.pane, code: w, guide: guideW };
+						} else {
+							store.pane = { ...store.pane, code: w };
+						}
+					}
+				} else if (drag.kind === 'code') {
+					const sourceW = Math.max(PANE_MIN_PX, Math.min(drag.startCodeW - PANE_DIV_W - PANE_MIN_PX, drag.startSourceW + dx));
+					store.pane = { ...store.pane, guide: drag.startCodeW - PANE_DIV_W - sourceW };
+				} else if (drag.kind === 'tree') {
+					const w = Math.max(PANE_MIN_PX, Math.min(dragMaxOf(effCodeOf(store.pane, false) + PANE_DIV_W), drag.startTreeW - dx));
+					store.pane = { ...store.pane, tree: w };
+				}
+				emit();
+			};
+
+			const endDrag = () => {
+				if (drag) {
+					try { localStorage.setItem('cg-pane', JSON.stringify(store.pane)); } catch (_) {}
+				}
+				setDrag(null);
+			};
+
+			const resizeMoveRef = react.useRef(onResizeMove);
+			resizeMoveRef.current = onResizeMove;
+			const endDragRef = react.useRef(endDrag);
+			endDragRef.current = endDrag;
+
+			react.useEffect(() => {
+				if (!drag) return;
+				const onMove = (e) => resizeMoveRef.current(e);
+				const onUp = () => endDragRef.current();
+				window.addEventListener('pointermove', onMove);
+				window.addEventListener('pointerup', onUp);
+				window.addEventListener('pointercancel', onUp);
+				return () => {
+					window.removeEventListener('pointermove', onMove);
+					window.removeEventListener('pointerup', onUp);
+					window.removeEventListener('pointercancel', onUp);
+				};
+			}, [!!drag]);
+
+			return { drag, onResizeStart, onDividerStart, onResizeMove, endDrag };
+		};
 
 		const GuidePanel = (props) => {
 			const s = useStore();
@@ -1898,25 +2151,19 @@ html[data-cg-panel-open] [data-phase=active] {
 			if (!rootPath && wsItems.length > 0) { rootPath = wsItems[0].path; rootName = wsItems[0].title }
 
 			const [tree, setTree] = react.useState(null);
-			// 多页签:每项 = file 对象(内容/视图/滚动/解读结果都挂页签上);
-			// activePath 指向当前渲染页签;tabsRef 供异步回调读最新值;
-			// lastUsed 决定满员时淘汰最久未用
-			const [tabs, setTabs] = react.useState([]);
-			const [activePath, setActivePath] = react.useState(null);
-			const tabsRef = react.useRef([]);
-			const activePathRef = react.useRef(null);
-			const TAB_MAX = 8;
-			const commitTabs = (next) => { tabsRef.current = next; setTabs(next) };
-			// 单击树文件的临时预览(VSCode 语义):双击转正为页签;previewActive
-			// 决定预览是否"当前显示"
-			const [previewFile, setPreviewFile] = react.useState(null);
-			const previewRef = react.useRef(null);
-			const [previewActive, setPreviewActive] = react.useState(false);
-			const previewActiveRef = react.useRef(false);
-			const setPreviewActiveBoth = (v) => { previewActiveRef.current = !!v; setPreviewActive(!!v) };
-			const file = (previewFile && previewActive) ? previewFile : tabs.find((t) => t.path === activePath) || null;
-			// ---- 阶段1 派生数据 ----
-			// 文件内搜索:状态存在页签对象(file.find),命中列表按内容+条件派生
+			const rootKey = rootPath || '';
+			const tm = useTabState(rootKey);
+			const { tabs, activePath, preview: previewFile, previewActive } = tm.state;
+			const file = currentFile(tm.state);
+			const tabsRef = { get current() { return tm.ref.current.tabs } };
+			const activePathRef = { get current() { return tm.ref.current.activePath } };
+			const previewRef = { get current() { return tm.ref.current.preview } };
+			const previewActiveRef = { get current() { return tm.ref.current.previewActive } };
+			const commitTabs = tm.commitTabs;
+			const setActivePath = tm.setActivePath;
+			const setPreviewFile = tm.setPreview;
+			const setPreviewActive = (v) => tm.setPreviewActive(!!v);
+
 			const findState = file && file.find ? file.find : null;
 			const findMatches = react.useMemo(() => {
 				if (!file || !findState || !findState.open) return [];
@@ -1924,10 +2171,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!q) return [];
 				return computeFindMatches(file.content || '', q, !!findState.caseSensitive, MAX_LINES);
 			}, [file && file.path, file && file.content, findState && findState.open, findState && findState.query, findState && findState.caseSensitive]);
-			// 代码总行数(虚拟滚动的总高度基准)
-			const codeTotalLines = react.useMemo(() => String((file && file.content) || '').split('\n').length, [file && file.content]);
-			// md 解析(html + 标题列表):按内容缓存,滚动跟随与目录共用;
-			// 查找打开时先按行注入命中占位,最终 HTML 统一替换成 <mark>
+						const codeTotalLines = react.useMemo(() => String((file && file.content) || '').split('\n').length, [file && file.content]);
 			const mdParsed = react.useMemo(() => {
 				if (!file || file.view !== 'preview' || !isMarkdown(file.name)) return null;
 				let text = file.content || '';
@@ -1972,63 +2216,8 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 				lastFindFollowViewRef.current = viewKey;
 			}, [findMatches, findState && findState.current, activePath, previewActive]);
-			// 按路径更新页签或预览对象(异步回调带 path 守卫);updater 返回
-			// null/false 表示删除
-			const patchTab = (path, updater) => {
-				const pv = previewRef.current;
-				if (pv && pv.path === path) {
-					const n = typeof updater === 'function' ? updater(pv) : updater;
-					previewRef.current = (n === null || n === false) ? null : n;
-					setPreviewFile(previewRef.current);
-					return;
-				}
-				let hitLive = false;
-				const nextTabs = tabsRef.current.map((t) => {
-					if (t.path !== path) return t;
-					hitLive = true;
-					const n = typeof updater === 'function' ? updater(t) : updater;
-					return (n === null || n === false) ? null : n;
-				}).filter(Boolean);
-				if (hitLive) { commitTabs(nextTabs); return }
-				// 页签已随工作区切走:异步结果落到它所属工作区的缓存里,
-				// 否则切回后页签永远卡在"生成中/读取中"
-				patchParkedTabs(path, updater);
-			};
-			// 把异步结果写回所有"停车"工作区缓存里的同名页签/预览
-			// (当前工作区由 patchTab 主路径处理,这里跳过)
-			const patchParkedTabs = (path, updater) => {
-				const current = rootKeyRef.current;
-				for (const [key, entry] of workspaceTabSets) {
-					if (key === current) continue;
-					let changed = false;
-					let nextPv = entry.preview;
-					if (nextPv && nextPv.path === path) {
-						const n = typeof updater === 'function' ? updater(nextPv) : updater;
-						nextPv = (n === null || n === false) ? null : n;
-						changed = changed || nextPv !== entry.preview;
-					}
-					const nextTabs = entry.tabs.map((t) => {
-						if (t.path !== path) return t;
-						const n = typeof updater === 'function' ? updater(t) : updater;
-						changed = changed || n !== t;
-						return (n === null || n === false) ? null : n;
-					}).filter(Boolean);
-					if (changed) {
-						workspaceTabSets.set(key, {
-							tabs: nextTabs,
-							preview: nextPv,
-							previewActive: entry.previewActive,
-							activePath: entry.activePath,
-						});
-					}
-				}
-			};
-			// 更新当前显示对象(视图切换/解读开关等):按显示中的 file 路由
-			const patchActive = (updater) => {
-				const p = file ? file.path : null;
-				if (p) patchTab(p, updater);
-			};
-			// ---- 阶段1 动作 ----
+			const patchTab = tm.patchTab;
+			const patchActive = tm.patchActive;
 			const openFind = () => {
 				if (!file) return;
 				patchActive((t) => t ? { ...t, find: { open: true, query: (t.find && t.find.query) || '', caseSensitive: !!(t.find && t.find.caseSensitive), current: 0 } } : t);
@@ -2093,10 +2282,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const end = Math.min(total, Math.ceil((top + viewH) / LINE_H) + VIRT_OVERSCAN + 1);
 				setVrange((v) => (v.start === start && v.end === end ? v : { start, end }));
 			};
-			// 滚动动画进行中标记:animateScroll 的 onFrame 已逐帧 seedVrange,
-			// onCodeScroll 不再重复调用,避免同帧双重 setState
 			const scrollAnimatingRef = react.useRef(false);
-			// 源码区滚动 → 虚拟滚动范围更新(rAF 节流)
 			const onCodeScroll = () => {
 				if (scrollAnimatingRef.current) return;
 				if (codeScrollRafRef.current !== null) return;
@@ -2107,63 +2293,40 @@ html[data-cg-panel-open] [data-phase=active] {
 					seedVrange(pane.scrollTop);
 				});
 			};
-			const [active, setActive] = react.useState(null); // function index
+			const [active, setActive] = react.useState(null);
 			const [tab, setTab] = react.useState('guide');
-			const [drag, setDrag] = react.useState(null);
-			// 阶段1:md 目录浮层、目录当前项、虚拟滚动范围
 			const [tocOpen, setTocOpen] = react.useState(false);
 			const [mdActiveId, setMdActiveId] = react.useState(null);
 			const [vrange, setVrange] = react.useState({ start: 0, end: 80 });
 			const mdActiveIdRef = react.useRef(null);
 			const mdScrollRafRef = react.useRef(null);
 			const codeScrollRafRef = react.useRef(null);
-			// 窗口尺寸变化计数:驱动重渲染,让"面板≥视窗1/3"等约束实时重算
 			const [winTick, setWinTick] = react.useState(0);
-			// 变量闪烁: { name, funcIndex, seq }
 			const [flash, setFlash] = react.useState(null);
 			const flashTimerRef = react.useRef(null);
-			// 解读项闪烁定时器(点击代码行时) + 当前闪烁元素(新闪烁顶掉旧定时器时摘类)
 			const itemFlashTimerRef = react.useRef(null);
 			const itemFlashElRef = react.useRef(null);
-			// 跳转目标行闪烁: { line, seq }(Ctrl+点击跳转 / 历史导航)
 			const [jumpLine, setJumpLine] = react.useState(null);
 			const jumpLineTimerRef = react.useRef(null);
-			// 跳转历史:所有跳转入栈,Alt+←/→ 前进后退
 			const jumpHistoryRef = react.useRef([]);
 			const jumpIndexRef = react.useRef(-1);
-			// 最近交互行:跳转的"出发点"取用户最后点击/停留的那一行,
-			// 而不是滚动位置折算的顶部行(否则 Alt+← 闪烁落在错行)
 			const lastFocusRef = react.useRef(null);
-			// 自动刷新:面板打开期间轮询已展开目录,合并变化(默认开)
 			const [autoWatch, setAutoWatch] = react.useState(true);
-			// 最新树镜像供轮询读取(避免闭包过期) + 轮询互斥标记
 			const treeRef = react.useRef(null);
 			const pollBusyRef = react.useRef(false);
-			// 操作状态提示(自动刷新检测到文件变化等),4s 自动消失
 			const [status, setStatus] = react.useState(null);
 			const statusSeqRef = react.useRef(0);
 			const statusTimerRef = react.useRef(null);
-			// markdown 预览容器(注入后渲染 mermaid 占位)
 			const mdRef = react.useRef(null);
 
 			const codePaneRef = react.useRef(null);
 			const guideRef = react.useRef(null);
-			// 代码区重活(语法高亮 + 逐行切分 + 查找/闪烁占位)在面板层做
-			// useMemo:renderCode 是普通函数,内部条件调用 hooks 会触发
-			// React #310;且必须放在其引用的状态(flash 等)初始化之后,
-			// 否则工厂立即执行会踩 TDZ
 			const codeBuilt = react.useMemo(() => {
 				if (!file || file.reading || file.error || file.tooLarge || file.binary || file.view === 'preview') return null;
 				const lines = contentLines(file.content);
 				const shown = lines.slice(0, MAX_LINES);
 				let markedLines = shown;
-				// 查找命中占位(先于闪烁;闪烁的变量替换不会误伤占位符)。
-				// 当前命中不加特殊占位:渲染循环里按行内序号换成当前样式,
-				// 这样 上一个/下一个 切换不触发整段高亮重算。
-				// 与 md 预览共用 markFindLines,currentIdx=-1 表示全部普通命中
 				if (findMatches.length > 0) markedLines = markFindLines(markedLines, findMatches, -1);
-				// 变量闪烁:先用占位符把目标区间内的出现处包住,高亮完成后再替换为
-				// <mark>,避免正则直接作用于 HTML(会误伤 class 属性里的片段)
 				const flashFn = flash && file.functions ? file.functions[flash.funcIndex] : null;
 				if (flashFn && flash && flash.name) {
 					const escName = flash.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2173,14 +2336,11 @@ html[data-cg-panel-open] [data-phase=active] {
 						return (lineNo >= flashFn.start && lineNo <= flashFn.end) ? line.replace(re, '\u0001$1\u0002') : line;
 					});
 				}
-				// 语法高亮:整段一次高亮(保证跨行注释/字符串颜色连续),再按行切分补齐 span
 				const lang = file && file.name ? hlLangFor(file.name) : '';
 				const html = lang && lang !== 'markdown' && lang !== 'text' ? highlight(markedLines.join('\n'), lang) : escapeHtml(markedLines.join('\n'));
 				return { lineHtmls: splitHighlighted(html).slice(0, MAX_LINES), truncated: lines.length > MAX_LINES };
 			}, [file && file.path, file && file.view, file && file.content, file && file.name, flash && flash.name, flash && flash.funcIndex, findMatches]);
 
-			// 重置"当前页"的行号相关 UI 状态与跳转历史
-			// (切页/关页/打开新文件 = 新的浏览起点)
 			const resetFocusState = () => {
 				setActive(null);
 				setFlash(null);
@@ -2202,31 +2362,25 @@ html[data-cg-panel-open] [data-phase=active] {
 				const top = scroller.scrollTop;
 				patchTab(p, (t) => t ? { ...t, scrollTop: top } : t);
 			};
-			// 切页签:滚动/解读/视图随页签保留,切回原样恢复;预览 tab 常驻不销毁
 			const switchTo = (path) => {
 				if (!path || (path === activePathRef.current && !(previewRef.current && previewActiveRef.current))) return;
 				saveScroll();
 				resetFocusState();
-				if (previewRef.current) setPreviewActiveBoth(false);
+				if (previewRef.current) setPreviewActive(false);
 				commitTabs(tabsRef.current.map((t) => t.path === path ? { ...t, lastUsed: Date.now() } : t));
 				setActivePath(path);
-				activePathRef.current = path;
 			};
-			// 点击预览页签 = 重新激活预览(内容/解读保留,不重读)
 			const switchToPreview = () => {
 				if (!previewRef.current || previewActiveRef.current) return;
 				saveScroll();
 				resetFocusState();
-				setPreviewActiveBoth(true);
+				setPreviewActive(true);
 			};
-			// 关闭预览:预览 tab 从页签栏移除
 			const closePreview = () => {
 				setPreviewFile(null);
-				previewRef.current = null;
-				setPreviewActiveBoth(false);
+				setPreviewActive(false);
 				resetFocusState();
 			};
-			// 切页/切预览后恢复该对象上次滚动位置;首次打开回到顶部
 			react.useLayoutEffect(() => {
 				const t = file;
 				const scroller = codePaneRef.current || mdRef.current;
@@ -2243,29 +2397,18 @@ html[data-cg-panel-open] [data-phase=active] {
 				statusTimerRef.current = setTimeout(() => { if (seq === statusSeqRef.current) setStatus(null) }, 4000);
 			};
 
-			// ---- 分工作区页签集合 ----
-			// 页签变化持续写回模块级缓存,进入工作区时恢复(含重挂载);
-			// restore 声明在 save 之前,空状态不会覆盖旧缓存
-			const rootKey = rootPath || '';
-			// save 防呆:rootKey 变化的那次渲染,页签状态仍是上一工作区的,
-			// 跳过本次保存,避免 A 工作区的页签瞬写进 B 的缓存槽
 			const rootKeyRef = react.useRef(null);
-			// 进入工作区:恢复该区的页签集合(首次访问为空)
 			react.useEffect(() => {
 				const saved = rootKey ? workspaceTabSets.get(rootKey) : null;
-				const t = saved ? saved.tabs : [];
-				tabsRef.current = t;
-				setTabs(t);
-				const pv = saved ? saved.preview : null;
-				previewRef.current = pv;
-				setPreviewFile(pv);
-				setPreviewActiveBoth(saved ? !!saved.previewActive : false);
-				setActivePath(saved ? saved.activePath : null);
-				activePathRef.current = saved ? saved.activePath : null;
+				tm.batch(
+					{ type: tabActions.SET_TABS, tabs: saved ? saved.tabs : [] },
+					{ type: tabActions.SET_PREVIEW, file: saved ? saved.preview : null },
+					{ type: tabActions.SET_PREVIEW_ACTIVE, active: saved ? !!saved.previewActive : false },
+					{ type: tabActions.SET_ACTIVE, path: saved ? saved.activePath : null },
+				);
 				resetFocusState();
 				setTocOpen(false);
 			}, [rootKey]);
-			// 页签集合变化:持续写回当前工作区的缓存
 			react.useEffect(() => {
 				if (!rootKey) return;
 				if (rootKeyRef.current !== rootKey) { rootKeyRef.current = rootKey; return }
@@ -2398,8 +2541,6 @@ html[data-cg-panel-open] [data-phase=active] {
 				window.addEventListener('keydown', onKey);
 				return () => window.removeEventListener('keydown', onKey);
 			}, [s.open, file]);
-			// Alt+←/→:跳转历史前进/后退。仅当确有历史且能移动时才接管,
-			// 空历史/已到边界放行浏览器前进后退键
 			react.useEffect(() => {
 				const onKey = (e) => {
 					if (!s.open) return;
@@ -2411,10 +2552,17 @@ html[data-cg-panel-open] [data-phase=active] {
 					else idx = Math.min(arr.length - 1, idx + 1);
 					if (idx === jumpIndexRef.current) return;
 					e.preventDefault();
-					const line = arr[idx];
+					const entry = arr[idx];
+					const pane = codePaneRef.current;
+					if (pane && entry.scrollTop !== null) {
+						seedVrange(entry.scrollTop);
+						jumpPendingRef.current = { top: entry.scrollTop, onArrive: () => flashJumpLine(entry.line) };
+						setJumpTick((t) => t + 1);
+					} else {
+						jumpToLine(entry.line, () => flashJumpLine(entry.line));
+					}
 					jumpIndexRef.current = idx;
-					lastFocusRef.current = line;
-					jumpToLine(line, () => flashJumpLine(line));
+					lastFocusRef.current = entry.line;
 				};
 				window.addEventListener('keydown', onKey, true);
 				return () => window.removeEventListener('keydown', onKey, true);
@@ -2467,19 +2615,14 @@ html[data-cg-panel-open] [data-phase=active] {
 				patchTab(path, (f) => f ? { ...f, explaining: false, explainError: String((err && err.message) || err) } : f);
 			};
 
-			// 页签满员时淘汰最久未用(排除当前活动页),返回裁剪后的数组
 			const pruneTabs = (next) => {
-				if (next.length < TAB_MAX) return next;
-				let victim = null;
-				for (const t of next) {
-					if (t.path === activePathRef.current) continue;
-					if (!victim || (t.lastUsed || 0) < (victim.lastUsed || 0)) victim = t;
+				const pruned = tm.pruneTabs(next);
+				if (pruned.length < next.length) {
+					const removed = next.find((t) => !pruned.includes(t));
+					if (removed) showStatus({ ok: false, text: '页签已满，已关闭最久未用的「' + removed.name + '」' });
 				}
-				if (!victim) return next;
-				showStatus({ ok: false, text: '页签已满，已关闭最久未用的「' + victim.name + '」' });
-				return next.filter((t) => t !== victim);
+				return pruned;
 			};
-			// 读取完成:填充内容/错误/过大标记(patchTab 按 path 路由到页签或预览)
 			const applyReadResult = (path, res) => {
 				patchTab(path, (f) => {
 					if (!f) return f;
@@ -2489,9 +2632,7 @@ html[data-cg-panel-open] [data-phase=active] {
 					return { ...f, reading: false, content: res.content, size: res.size };
 				});
 			};
-			// 读取源码(只读、立刻显示;解读由用户点按钮才触发)
 			const readInto = (entry) => {
-				// 图片/PDF 不走文本读取:内容由 /raw 字节流直接加载,读取态立即结束
 				if (isImageFile(entry.name) || isPdfFile(entry.name)) {
 					patchTab(entry.path, (f) => f ? { ...f, reading: false } : f);
 					return;
@@ -2503,10 +2644,6 @@ html[data-cg-panel-open] [data-phase=active] {
 					});
 			};
 
-			// 双击文件 = 真正打开:已在页签则切换(解读/滚动原样保留);正在预览
-			// 该文件则预览对象整体转正(解读/视图保留,不重读);否则新建页签。
-			// 打开 = 新的浏览起点(跳转历史随 resetFocusState 清空);
-			// 其他文件的预览 tab 保留在页签栏(未激活)
 			const openFile = (entry) => {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				const existing = tabsRef.current.find((t) => t.path === entry.path);
@@ -2514,37 +2651,24 @@ html[data-cg-panel-open] [data-phase=active] {
 					switchTo(entry.path);
 					return;
 				}
-				// 保存被替换视图(固定页签或预览)的阅读位置:与 switchTo 对齐。
-				// 此前这里漏保存——从树里双击打开新文件时,旧视图的滚动位置
-				// 直接丢失,切回来只能恢复旧值(初始位置)
 				saveScroll();
 				const pv = previewRef.current;
-				// 预览转正:对象(含解读结果)整体进页签,原位斜体变正体;
-				// reading 中也可转正(双击树文件时第一次单击刚建预览,双击到达时
-				// 往往还没读完:read.then 会按 path 更新新页签,不重读不闪烁)
 				const promoted = !!(pv && pv.path === entry.path && !pv.error && !pv.tooLarge);
-				// md/.mmd 默认进预览视图,其余进源码视图
 				const tab = promoted
 					? { ...pv, lastUsed: Date.now() }
 					: { path: entry.path, name: entry.name, root: rootPath, reading: true, explaining: false, view: (isMarkdown(entry.name) || isMermaidFile(entry.name) || isImageFile(entry.name) || isPdfFile(entry.name)) ? 'preview' : 'code', lastUsed: Date.now() };
 				if (promoted) {
 					setPreviewFile(null);
-					previewRef.current = null;
-					setPreviewActiveBoth(false);
+					setPreviewActive(false);
 				} else if (previewRef.current) {
-					// 双击另一个文件:旧预览 tab 保留但不激活
-					setPreviewActiveBoth(false);
+					setPreviewActive(false);
 				}
 				resetFocusState();
 				commitTabs(pruneTabs(tabsRef.current).concat([tab]));
 				setActivePath(entry.path);
-				activePathRef.current = entry.path;
 				if (!promoted) readInto(entry);
 			};
 
-			// 单击树中文件 = 临时预览:已打开的切页签;该文件已在预览槽则直接
-			// 重新激活(不重读);否则替换预览槽并读取。双击(树文件名或预览页签)
-			// 原地转正为页签
 			const previewEntry = (entry) => {
 				setTree((t) => t ? { ...t, selected: entry.path } : t);
 				const existing = tabsRef.current.find((t) => t.path === entry.path);
@@ -2557,14 +2681,11 @@ html[data-cg-panel-open] [data-phase=active] {
 					switchToPreview();
 					return;
 				}
-				// 新预览覆盖当前视图(固定页签或旧预览)前,保存其阅读位置。
-				// 此前这里同样漏保存:切回原页签只能恢复旧值(初始位置)
 				saveScroll();
 				resetFocusState();
 				const next = { path: entry.path, name: entry.name, root: rootPath, reading: true, explaining: false, view: (isMarkdown(entry.name) || isMermaidFile(entry.name) || isImageFile(entry.name) || isPdfFile(entry.name)) ? 'preview' : 'code' };
-				previewRef.current = next;
 				setPreviewFile(next);
-				setPreviewActiveBoth(true);
+				setPreviewActive(true);
 				readInto(entry);
 			};
 
@@ -2699,83 +2820,44 @@ html[data-cg-panel-open] [data-phase=active] {
 				});
 			};
 			const runExplain = () => { if (file) startExplain(file) };
-			// 解读框右上角关闭:只收起解读板块,源码保持打开;
-			// 同时清掉代码区的高亮阴影,恢复纯脚本显示
 			const closeGuide = () => {
 				patchActive((f) => f ? { ...f, guideOn: false } : f);
 				setActive(null);
 				setFlash(null);
 				if (flashTimerRef.current !== null) { clearTimeout(flashTimerRef.current); flashTimerRef.current = null }
-				// 关闭解读后源码区宽度变化,重算虚拟窗口避免底部空白
 				requestAnimationFrame(() => {
 					const pane = codePaneRef.current;
 					if (pane) seedVrange(pane.scrollTop);
 				});
 			};
-			// 关闭页签:若关的是当前页,自动切到相邻页签;全部关闭回到 tree-only。
-			// 预览 tab 不受影响(保留在页签栏)
 			const closeTab = (path) => {
 				const idx = tabsRef.current.findIndex((t) => t.path === path);
 				if (idx < 0) return;
 				const next = tabsRef.current.filter((t) => t.path !== path);
 				commitTabs(next);
-				// 预览页签正显示时,关闭任意固定页签只移除它,显示保持不动;
-				// 若关的就是"最后活跃页签",把 activePath 挪到剩余页签,
-				// 否则之后关闭预览会找不到落点
 				if (previewRef.current && previewActiveRef.current) {
 					if (activePathRef.current === path) {
 						const rest = next[idx] || next[idx - 1] || null;
 						setActivePath(rest ? rest.path : null);
-						activePathRef.current = rest ? rest.path : null;
 					}
 					return;
 				}
 				if (activePathRef.current !== path) return;
-				// 关的是当前显示的页签:优先切相邻页签;没有则让预览页签
-				// 接管显示(预览页签在页签栏里,不随固定页签关闭);
-				// 再没有才回到 tree-only
 				const fallback = next[idx] || next[idx - 1] || null;
 				resetFocusState();
 				if (fallback) {
 					setActivePath(fallback.path);
-					activePathRef.current = fallback.path;
 				} else if (previewRef.current) {
-					setPreviewActiveBoth(true);
+					setPreviewActive(true);
 					setActivePath(null);
-					activePathRef.current = null;
 				} else {
 					setActivePath(null);
-					activePathRef.current = null;
 				}
 			};
 
-			// renderCode 的行数组用 useMemo 缓存;onLineClick 每次渲染都是新闭包,
-			// 通过 ref 让缓存行拿到最新版本,避免把整个函数放进 memo 依赖
 			const onLineClickRef = react.useRef(null);
-			const lineFuncAt = (lineNo) => {
-				if (!file || !file.functions) return null;
-				const fns = file.functions;
-				if (fns.length === 0) return null;
-				// 二分找"最后一个 start ≤ lineNo"的函数下标 k(数组按 start 升序)。
-				// 注意方向:找"第一个"会让 mid 序列跳过下标 0,首个函数整体映射失效
-				let lo = 0, hi = fns.length - 1, k = -1;
-				while (lo <= hi) {
-					const mid = (lo + hi) >> 1;
-					if (fns[mid].start <= lineNo) { k = mid; lo = mid + 1 } else hi = mid - 1;
-				}
-				if (k === -1) return null;
-				// 常见情形(函数不嵌套):k 直接命中
-				if (lineNo >= fns[k].start && lineNo <= fns[k].end) return k;
-				// 嵌套/重叠区间:线性回退,取数组序第一个包含者
-				for (let i = 0; i <= k; i++) {
-					if (lineNo >= fns[i].start && lineNo <= fns[i].end) return i;
-				}
-				return null;
-			};
+			const lineFuncAt = (lineNo) => lineFuncIndex(file && file.functions, lineNo);
 
-			// JS 平滑滚动:不依赖原生 smooth(系统关动画效果时原生会瞬跳)。
-			// wheel/触摸/指针按下立即取消,用户手动滚动优先;到位回调 onArrive
-			// onFrame:可选逐帧回调,用于中距离跳转时同步虚拟滚动窗口
 			const scrollAnims = new WeakMap();
 			const animateScroll = (el, targetTop, onArrive, onFrame) => {
 				const prev = scrollAnims.get(el);
@@ -2803,7 +2885,6 @@ html[data-cg-panel-open] [data-phase=active] {
 				const step = (now) => {
 					if (done) return;
 					const p = Math.min(1, (now - t0) / dur);
-					// easeInOutCubic:起止缓、中段快
 					const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
 					const newTop = startTop + delta * eased;
 					el.scrollTop = newTop;
@@ -2818,45 +2899,47 @@ html[data-cg-panel-open] [data-phase=active] {
 				raf = requestAnimationFrame(step);
 			};
 
-			// 行号→滚动位置平滑滑到位后回调 onArrive(闪烁不提前开始);
-			// 虚拟滚动下目标行可能未渲染,只能数学换算。
-			// 三档策略:
-			//   ≤2 倍视窗  → 原有平滑滚动
-			//   2~5 倍视窗 → 平滑滚动 + 逐帧 seedVrange(虚拟窗口追得上)
-			//   >5 倍视窗  → 瞬移到目标上方 1 屏 + 短距离平滑滑入(有到达感)
 			const jumpRafRef = react.useRef(null);
-			const jumpToLine = (start, onArrive) => {
+			const jumpPendingRef = react.useRef(null);
+			const [jumpTick, setJumpTick] = react.useState(0);
+
+			react.useLayoutEffect(() => {
+				const j = jumpPendingRef.current;
+				if (!j) return;
+				jumpPendingRef.current = null;
+				const pane = codePaneRef.current;
+				if (!pane) { if (j.onArrive) j.onArrive(); return }
+				pane.scrollTop = j.top;
+				const arr = jumpHistoryRef.current;
+				const cur = arr[jumpIndexRef.current];
+				if (cur && cur.scrollTop === null) cur.scrollTop = j.top;
+				if (j.onArrive) j.onArrive();
+			}, [jumpTick]);
+
+			const jumpToLine = (start, onArrive, smooth) => {
 				if (jumpRafRef.current !== null) {
 					cancelAnimationFrame(jumpRafRef.current);
 					jumpRafRef.current = null;
 				}
+				jumpPendingRef.current = null;
 				const pane = codePaneRef.current;
 				if (!pane) { if (onArrive) onArrive(); return }
 				const top = Math.max(0, (start - 1) * LINE_H - Math.floor(pane.clientHeight * 0.2));
-				const dist = Math.abs(top - pane.scrollTop);
-				const viewH = pane.clientHeight;
-				if (dist > viewH * 5) {
-					// 远距离:瞬移到目标上方 1 屏,再短距离平滑滑入
-					const preTop = Math.max(0, top - viewH);
-					seedVrange(preTop);
-					pane.scrollTop = preTop;
-					jumpRafRef.current = requestAnimationFrame(() => {
-						jumpRafRef.current = null;
-						seedVrange(top);
-						animateScroll(pane, top, onArrive, seedVrange);
-					});
+				if (!smooth) {
+					seedVrange(top);
+					jumpPendingRef.current = { top, onArrive };
+					setJumpTick((t) => t + 1);
 					return
 				}
+				const dist = Math.abs(top - pane.scrollTop);
+				const viewH = pane.clientHeight;
 				if (dist > viewH * 2) {
-					// 中距离:平滑滚动 + 逐帧同步虚拟窗口
-					seedVrange(top);
 					animateScroll(pane, top, onArrive, seedVrange);
 					return
 				}
 				animateScroll(pane, top, onArrive);
 			};
 
-			// 目标行闪烁 2s(跳转定位反馈)
 			const flashJumpLine = (line) => {
 				const seq = Date.now();
 				setJumpLine({ line, seq });
@@ -2866,7 +2949,6 @@ html[data-cg-panel-open] [data-phase=active] {
 					setJumpLine((j) => (j && j.seq === seq ? null : j));
 				}, 2000);
 			};
-			// 当前滚动位置折算行号(动态取实际行高,字号调整后依然准确)
 			const currentLineOf = () => {
 				const pane = codePaneRef.current;
 				if (!pane) return 1;
@@ -2874,94 +2956,47 @@ html[data-cg-panel-open] [data-phase=active] {
 				const lineH = el ? (el.getBoundingClientRect().height || 21) : 21;
 				return Math.max(1, Math.round(pane.scrollTop / lineH) + 1);
 			};
-			// 函数跳转目标行:start 可能是装饰器行,向后找定义行
-			// (跳转落在定义行更直观;高亮范围仍从装饰器行起)。覆盖
-			// Python/JS/TS/Go(func,含 receiver)/Rust(fn) 等常见定义形式
-			const jumpTargetOf = (fn) => {
-				if (!file || !file.content) return fn.start;
-				const lines = contentLines(file.content);
-				for (let k = fn.start; k <= Math.min(lines.length, fn.start + 20); k++) {
-					if (/^\s*(?:async\s+)?def\s/.test(lines[k - 1])
-						|| /^\s*(?:export\s+)?(?:async\s+)?function\s/.test(lines[k - 1])
-						|| /^\s*(?:func|fn)\s/.test(lines[k - 1])
-						|| /^\s*class\s/.test(lines[k - 1])
-						|| /^\s*(?:const|let|var)\s/.test(lines[k - 1])) return k;
-				}
-				return fn.start;
-			};
-			// 目标行是否完整落在代码窗可视区内(纯数学换算,虚拟滚动未渲染的
-			// 行也能判)。解读侧点击用它决定"只闪烁不滚动",不把视图拖走
+			const jumpTargetOf = (fn) => jumpTargetLine(fn, file && file.content);
 			const lineVisibleInPane = (lineNo) => {
 				const pane = codePaneRef.current;
 				if (!pane) return false;
-				// 整行可见:行顶在 pane 顶之下、行底在 pane 底之上
 				const topVis = Math.ceil(1 + pane.scrollTop / LINE_H);
 				const bottomVis = Math.floor((pane.scrollTop + pane.clientHeight) / LINE_H);
 				return lineNo >= topVis && lineNo <= bottomVis;
 			};
-			// 跳转统一入口:出发点+落点入历史栈 → 滚动定位 → 目标行闪烁。
-			// 出发点优先取"最近交互行";soft(解读侧)下目标已可见则只闪不滚
 			const navigateTo = (line, from, soft) => {
 				const arr = jumpHistoryRef.current;
 				const idx = jumpIndexRef.current;
+				const pane = codePaneRef.current;
+				const curScroll = pane ? pane.scrollTop : 0;
 				const origin = from !== undefined && from !== null
 					? from
 					: (lastFocusRef.current !== null ? lastFocusRef.current : currentLineOf());
-				arr.length = idx + 1; // 截断"前进"分支
-				if (arr[arr.length - 1] !== origin) arr.push(origin);
-				if (arr[arr.length - 1] !== line) arr.push(line);
+				arr.length = idx + 1;
+				const last = arr[arr.length - 1];
+				if (!last || last.line !== origin) arr.push({ line: origin, scrollTop: curScroll });
+				arr.push({ line, scrollTop: null });
 				jumpIndexRef.current = arr.length - 1;
 				lastFocusRef.current = line;
-				// 平滑滑到位后再闪烁(滑动途中目标行尚未渲染,提前闪烁会被吃掉);
-				// 已在可视区内则直接闪
-				if (!(soft && lineVisibleInPane(line))) jumpToLine(line, () => flashJumpLine(line));
+				if (!(soft && lineVisibleInPane(line))) jumpToLine(line, () => flashJumpLine(line), !!soft);
 				else flashJumpLine(line);
 			};
-			// Ctrl+点击标识符 → 跳转到其定义(当前文件内):优先用已解析的函数表
-			// (签名已校正),否则正则回退 def/class/function/const 等定义行
 			const jumpToDef = (name, fromLine) => {
 				if (!file || !file.content) return;
 				const fns = file.functions || [];
 				const hit = fns.find((f) => f.name === name || String(f.name).split('.').pop() === name);
 				if (hit) { navigateTo(jumpTargetOf(hit), fromLine); return }
 				const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-				// 定义形式:Python def/class · Go func(可带 receiver) · Rust fn ·
-				// JS/TS function/const/let/var · 赋值 name =
 				const defRe = new RegExp('(?:^|\\s)(?:def|class|fn)\\s+' + esc + '\\b|(?:^|\\s)func\\s+(?:\\([^)]*\\)\\s*)?' + esc + '\\b|(?:^|\\s)' + esc + '\\s*=|(?:^|\\s)(?:function|const|let|var)\\s+' + esc + '\\b');
 				const lines = contentLines(file.content);
 				for (let i = 0; i < lines.length; i++) {
 					if (defRe.test(lines[i])) { navigateTo(i + 1, fromLine); return }
 				}
 			};
-
-			// 点击主解读区(函数名 + 摘要):定位到对应代码行并高亮。
-			// 卡片其余区域(执行流程/留白)不跳转;执行流程里的变量名
-			// 由 onGuideClick 单独处理(定位变量首次出现处)
 			const onCardClick = (i) => {
 				setActive(i);
 				if (file && file.functions && file.functions[i]) navigateTo(jumpTargetOf(file.functions[i]), undefined, true);
 			};
-
-			// 多级回退搜索变量出现行:函数范围内精确匹配 → 函数范围内首标识符 →
-			// 全文件精确匹配 → 全文件首标识符。保证尽量跳转到
-			const findVarLine = (name, start, end, lines) => {
-				const mkRe = (p) => new RegExp('(?<![A-Za-z0-9_$])' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])');
-				const tokenM = /^[A-Za-z_$][\w$]*/.exec(name);
-				const candidates = [name];
-				if (tokenM && tokenM[0] !== name) candidates.push(tokenM[0]);
-				const ranges = [[Math.max(1, start), Math.max(start, end)], [1, lines.length]];
-				for (const range of ranges) {
-					for (const c of candidates) {
-						const re = mkRe(c);
-						for (let i = range[0]; i <= Math.min(range[1], lines.length); i++) {
-							if (re.test(lines[i - 1])) return i;
-						}
-					}
-				}
-				return -1;
-			};
-
-			// 点击解读中的变量名:定位到首次出现处并闪烁全部出现位置
 			const onGuideClick = (e) => {
 				const t = e.target;
 				const varEl = t.closest('.cg-var');
@@ -2973,7 +3008,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!name) return;
 				const fn = file.functions[idx];
 				const lines = contentLines(file.content);
-				const hitLine = findVarLine(name, fn.start, Math.max(fn.end, fn.start), lines);
+				const hitLine = findVarLineIn(name, fn.start, Math.max(fn.end, fn.start), lines);
 				const seq = Date.now();
 				setActive(idx);
 				setFlash({ name, funcIndex: idx, seq });
@@ -3015,13 +3050,11 @@ html[data-cg-panel-open] [data-phase=active] {
 				const steps = fn ? stepsOf(fn) : null;
 				let el = null;
 				if (steps && steps.length > 0 && lis.length > 0) {
-					// 内容锚定 + 区间分割:变量名定位 → 锚点分区,每行恰属于一个步骤
 					const codeLines = file && file.content ? contentLines(file.content) : null;
 					const j = stepPartitionIndex(lineNo, headerEnd + 1, fn.end, steps, codeLines);
 					if (j >= 0 && j < lis.length) el = lis[j];
 				}
 				if (!el) {
-					// 无步骤数据(旧格式/无 flow):标识符匹配 → 位置比例 → 主解读区
 					const lines = file ? contentLines(file.content) : [];
 					el = matchStepByTokens(lis, lines[lineNo - 1] || '');
 					if (!el && lis.length > 0 && fn) {
@@ -3034,14 +3067,11 @@ html[data-cg-panel-open] [data-phase=active] {
 				return true;
 			};
 
-			// 解读项闪烁:与代码窗观感一致——目标不在可视区时滑到"窗高 20% 处"
-			// 到位后再闪(不是边滚边闪);摘旧类 → 强制回流重挂类触发动画
 			const flashItemEl = (el) => {
 				if (!el) return;
 				if (itemFlashElRef.current) itemFlashElRef.current.classList.remove('cg-item-flash');
 				itemFlashElRef.current = el;
 				const applyFlash = () => {
-					// 滚动期间被更新的闪烁顶掉:旧到达不再动作
 					if (itemFlashElRef.current !== el) return;
 					el.classList.remove('cg-item-flash');
 					void el.offsetWidth;
@@ -3066,12 +3096,10 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!outOfView) applyFlash();
 			};
 
-			// 等宽字体字符宽度(把点击横坐标折算成行内字符偏移)
 			let charWidthCache = null;
 			const charWidth = () => {
 				if (charWidthCache === null) {
 					const ctx = document.createElement('canvas').getContext('2d');
-					// 优先取源码区实际计算字体(主题/样式覆盖字号时列换算不失准)
 					let font = '14px ui-monospace, SFMono-Regular, Consolas, monospace';
 					const pane = codePaneRef.current;
 					if (pane && typeof window.getComputedStyle === 'function') {
@@ -3083,15 +3111,11 @@ html[data-cg-panel-open] [data-phase=active] {
 				}
 				return charWidthCache;
 			};
-			// 窗口缩放/显示器 DPR 变化会改变字体度量:清掉缓存,下次测量重算,
-			// Ctrl+点击的列偏移换算才不失准
 			react.useEffect(() => {
 				const onWin = () => { charWidthCache = null };
 				window.addEventListener('resize', onWin);
 				return () => window.removeEventListener('resize', onWin);
 			}, []);
-			// 行号栏到代码文本起点的实际距离:动态测量(行号栏 sticky 不随横向
-			// 滚动,代码文本随滚动偏移,两者差值恒定,且不随字号/栏宽调整失效)
 			const gutterOf = (pane) => {
 				const line = pane.querySelector('.cg-line');
 				const text = line ? line.querySelector('.cg-code-text') : null;
@@ -3108,7 +3132,6 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 			const onLineClick = (lineNo, e) => {
 				lastFocusRef.current = lineNo;
-				// Ctrl/⌘+点击:跳转到所点标识符的定义处(当前文件内)
 				if (e && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
 					const pane = codePaneRef.current;
 					if (pane) {
@@ -3125,8 +3148,6 @@ html[data-cg-panel-open] [data-phase=active] {
 					// 面板收起时点代码行 = 纯脚本浏览(Ctrl+点击/Alt+←/→ 照常)
 					setActive(i);
 					setTab('guide');
-					// 等 React 渲染提交后再查 DOM(rAF 在 paint 前触发,
-					// 比固定 80ms 更可靠:不受设备性能影响)
 					requestAnimationFrame(() => requestAnimationFrame(() => flashGuideItem(i, lineNo)));
 				} else {
 					setActive(null);
@@ -3134,92 +3155,10 @@ html[data-cg-panel-open] [data-phase=active] {
 			};
 			onLineClickRef.current = onLineClick;
 
-			// 面板左缘拖动:只开树时调树宽;打开文件后调"源码区"总宽——
-			// 解读开着时,源码与解读按现有比例一起增宽,文件树不动(树单独手动调)
-			const onResizeStart = (e) => {
-				e.preventDefault();
-				const target = file ? 'code' : 'tree';
-				setDrag({
-					kind: 'outer',
-					target,
-					startX: e.clientX,
-					startW: target === 'code' ? effCodeOf(s.pane, !!(file && file.guideOn)) : s.pane.tree,
-					startCodeW: effCodeOf(s.pane, !!(file && file.guideOn)),
-					startGuideW: s.pane.guide,
-				});
-			};
-			// 分栏线拖动:记录起点宽度(源码|解读分栏线以"有效源码区宽"为基准)
-			const onDividerStart = (kind) => (e) => {
-				e.preventDefault();
-				setDrag({
-					kind,
-					startX: e.clientX,
-					startCodeW: effCodeOf(s.pane, true),
-					startTreeW: s.pane.tree,
-					startSourceW: sourceWidthOf(s.pane, true),
-				});
-			};
-			// 拖动中的最大宽度:与 git 版本一致,可拖到接近全宽(留 90px 余量)
-			const dragMaxOf = (others) => Math.max(PANE_MIN_PX, window.innerWidth - 90 - others);
-			const onResizeMove = (e) => {
-				if (!drag) return;
-				const dx = e.clientX - drag.startX;
-				if (drag.kind === 'outer') {
-					if (drag.target === 'tree') {
-						const w = Math.max(PANE_MIN_PX, Math.min(dragMaxOf(file ? effCodeOf(s.pane, false) + PANE_DIV_W : 0), drag.startW - dx));
-						store.pane = { ...store.pane, tree: w };
-					} else {
-						// 源码区下限:打开文件时面板最少占视窗 1/3(解读开着还要留解读位)
-						const min = codeFloorFor(s.pane, !!(file && file.guideOn));
-						const w = Math.max(min, Math.min(dragMaxOf(s.pane.tree + PANE_DIV_W), drag.startW - dx));
-						if (file && file.guideOn) {
-							// 源码与解读按拖动前的比例同时变宽/变窄
-							// (各自最小 240:guide 上限 = w-分栏线-240)
-							const gRatio = drag.startGuideW / Math.max(1, drag.startCodeW - PANE_DIV_W);
-							const guideW = Math.max(PANE_MIN_PX, Math.min(Math.round((w - PANE_DIV_W) * gRatio), w - PANE_DIV_W - PANE_MIN_PX));
-							store.pane = { ...store.pane, code: w, guide: guideW };
-						} else {
-							store.pane = { ...store.pane, code: w };
-						}
-					}
-				} else if (drag.kind === 'code') {
-					// 源码|解读分栏线:源码区总宽不变,只重新划分两者(各窗最小 240)
-					const sourceW = Math.max(PANE_MIN_PX, Math.min(drag.startCodeW - PANE_DIV_W - PANE_MIN_PX, drag.startSourceW + dx));
-					store.pane = { ...store.pane, guide: drag.startCodeW - PANE_DIV_W - sourceW };
-				} else if (drag.kind === 'tree') {
-					// 文件树左侧分栏线:向左拖 → 文件树变宽(面板随之变宽)
-					const w = Math.max(PANE_MIN_PX, Math.min(dragMaxOf(effCodeOf(s.pane, false) + PANE_DIV_W), drag.startTreeW - dx));
-					store.pane = { ...store.pane, tree: w };
-				}
-				emit();
-			};
-			const endDrag = () => {
-				if (drag) {
-					try {
-						localStorage.setItem('cg-pane', JSON.stringify(store.pane));
-					} catch (_) { /* 忽略存储失败 */ }
-				}
-				setDrag(null);
-			};
-			const resizeMoveRef = react.useRef(onResizeMove);
-			resizeMoveRef.current = onResizeMove;
-			const endDragRef = react.useRef(endDrag);
-			endDragRef.current = endDrag;
-			// window 级兜底:指针离开窗口/alt-tab 时 overlay 的 pointerleave
-			// 不一定触发,通过 window pointermove/pointerup 保证拖拽不粘住
-			react.useEffect(() => {
-				if (!drag) return;
-				const onMove = (e) => resizeMoveRef.current(e);
-				const onUp = () => endDragRef.current();
-				window.addEventListener('pointermove', onMove);
-				window.addEventListener('pointerup', onUp);
-				window.addEventListener('pointercancel', onUp);
-				return () => {
-					window.removeEventListener('pointermove', onMove);
-					window.removeEventListener('pointerup', onUp);
-					window.removeEventListener('pointercancel', onUp);
-				};
-			}, [!!drag]);
+			// 分栏拖拽（逻辑已提取到 useDragResize hook）
+			const fileRef = react.useRef(null);
+			fileRef.current = file;
+			const { drag, onResizeStart, onDividerStart, onResizeMove, endDrag } = useDragResize(fileRef);
 
 			const renderTree = () => {
 				if (!tree || !tree.rootPath) return react.createElement('div', { className: 'cg-empty' }, '未找到工作区');
