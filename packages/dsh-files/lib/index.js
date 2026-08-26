@@ -533,36 +533,93 @@ export function apply(ctx) {
   // 装饰器:锚定最后一行签名(def 行)再向上吸收 @ 行,跳转落在装饰器上
   const correctRanges = (functions, lines, langHint) => {
     const norm = (s) => String(s).replace(/\s+/g, '')
-    // 预计算去空白行,全文件扫描不逐次 replace
     const normLines = lines.map(norm)
+
+    // Python def 预扫描索引:{函数名 → [行号, ...]}
+    // signature 匹配全部失败时按函数名直接查表,比全文件正则快且准
+    const defIndex = new Map()
+    const defLineRe = /^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/
+    const fnLineRe = /^\s*(?:async\s+)?function\*?\s+([A-Za-z_$]\w*)\s*\(/
+    for (let i = 0; i < lines.length; i++) {
+      const dm = defLineRe.exec(lines[i]) || fnLineRe.exec(lines[i])
+      if (!dm) continue
+      const n = dm[1]
+      if (!defIndex.has(n)) defIndex.set(n, [])
+      defIndex.get(n).push(i + 1)
+    }
+
+    // 搜索半径与文件大小挂钩:小文件 ±30,大文件按 10% 总行数,上限 ±120
+    const searchRadius = Math.min(Math.max(30, Math.floor(lines.length * 0.1)), 120)
+
+    // 最近未占用候选选择器(签名回退 / 函数名兜底共用)
+    const pickNearest = (candidates, f) => {
+      let best = -1
+      let bestDist = Infinity
+      let bestOcc = 1
+      for (const i of candidates) {
+        const occupied = functions.some((g) => g !== f && i > g.start && i <= g.end)
+        const dist = Math.abs(i - f.start)
+        const occ = occupied ? 1 : 0
+        if (occ < bestOcc || (occ === bestOcc && dist < bestDist)) { best = i; bestDist = dist; bestOcc = occ }
+      }
+      return best
+    }
+
     for (const f of functions) {
-      if (!f.signature) continue
-      const sigAll = String(f.signature).split('\n').map((x) => norm(x)).filter((x) => x.length >= 4)
-      if (sigAll.length === 0) continue
-      const anchor = sigAll[sigAll.length - 1] // def/function 行是可靠锚点
       let found = -1
-      const lo = Math.max(1, f.start - 10)
-      const hi = Math.min(lines.length, f.start + 10)
-      for (let i = lo; i <= hi; i++) {
-        if (normLines[i - 1].startsWith(anchor)) { found = i; break }
-      }
-      if (found === -1) {
-        // 全文件回退:同名签名不能取"第一个",选 未被其他函数区间占用 且
-        // 离模型原始行号最近 的候选
-        let best = -1
-        let bestDist = Infinity
-        let bestOcc = 1
-        for (let i = 1; i <= lines.length; i++) {
-          if (!normLines[i - 1].startsWith(anchor)) continue
-          const occupied = functions.some((g) => g !== f && i > g.start && i <= g.end)
-          const dist = Math.abs(i - f.start)
-          const occ = occupied ? 1 : 0
-          if (occ < bestOcc || (occ === bestOcc && dist < bestDist)) { best = i; bestDist = dist; bestOcc = occ }
+
+      // ── 阶段 A:签名锚定(原始逻辑,窗口动态化) ──
+      if (f.signature) {
+        const sigAll = String(f.signature).split('\n').map((x) => norm(x)).filter((x) => x.length >= 4)
+        if (sigAll.length > 0) {
+          const anchor = sigAll[sigAll.length - 1]
+
+          // A1:动态窗口局部搜索
+          const lo = Math.max(1, f.start - searchRadius)
+          const hi = Math.min(lines.length, f.start + searchRadius)
+          for (let i = lo; i <= hi; i++) {
+            if (normLines[i - 1].startsWith(anchor)) { found = i; break }
+          }
+
+          // A2:全文件 startsWith 回退
+          if (found === -1) {
+            const hits = []
+            for (let i = 1; i <= lines.length; i++) {
+              if (normLines[i - 1].startsWith(anchor)) hits.push(i)
+            }
+            found = pickNearest(hits, f)
+          }
+
+          // A3:全文件 includes 子串模糊匹配(anchor 被截断时兜底)
+          if (found === -1 && anchor.length >= 12) {
+            const hits = []
+            for (let i = 1; i <= lines.length; i++) {
+              if (normLines[i - 1].includes(anchor)) hits.push(i)
+            }
+            found = pickNearest(hits, f)
+          }
         }
-        found = best
       }
+
+      // ── 阶段 B:函数名兜底(signature 为空/失效时仍有修正能力) ──
+      if (found === -1 && f.name) {
+        const baseName = f.name.includes('.') ? f.name.split('.').pop() : f.name
+        const candidates = defIndex.get(baseName)
+        if (candidates && candidates.length > 0) {
+          found = pickNearest(candidates, f)
+        }
+        if (found === -1) {
+          const nameEsc = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const nameRe = new RegExp('^\\s*(?:async\\s+)?(?:def|function\\*?|class)\\s+' + nameEsc + '\\b')
+          const hits = []
+          for (let i = 1; i <= lines.length; i++) {
+            if (nameRe.test(lines[i - 1])) hits.push(i)
+          }
+          found = pickNearest(hits, f)
+        }
+      }
+
       if (found > 0) {
-        // 向前收装饰器/注解行(@ 开头),让 start 覆盖整个装饰定义
         let s = found
         while (s > 1 && /^\s*@/.test(lines[s - 2])) s--
         f.start = s
@@ -697,6 +754,28 @@ export function apply(ctx) {
         if (prev.end >= cur.start) prev.end = Math.max(cur.start - 1, prev.start)
       }
     }
+    // 后置校验:检测 start 落在另一个函数体内部(典型场景:模型把提取出
+    // 的公共函数 window_nav 行号标在了 backtest 体内的相似代码段)。
+    // 发现后在 container.end 之后重新搜索同名 def/function 定义行
+    functions.sort((a, b) => a.start - b.start || a.end - b.end)
+    for (const f of functions) {
+      const container = functions.find((g) => g !== f && f.start > g.start && f.start <= g.end)
+      if (!container) continue
+      const baseName = f.name.includes('.') ? f.name.split('.').pop() : f.name
+      const nameEsc = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const nameRe = new RegExp('^\\s*(?:async\\s+)?(?:def|function\\*?|class)\\s+' + nameEsc + '\\b')
+      let relocated = -1
+      for (let i = container.end + 1; i <= lines.length; i++) {
+        if (nameRe.test(lines[i - 1])) { relocated = i; break }
+      }
+      if (relocated > 0) {
+        let s = relocated
+        while (s > 1 && /^\s*@/.test(lines[s - 2])) s--
+        f.start = s
+        if (f.end < f.start) f.end = f.start
+      }
+    }
+    functions.sort((a, b) => a.start - b.start || a.end - b.end)
     return functions
   }
 
