@@ -870,22 +870,6 @@ html[data-cg-panel-open] [data-phase=active] {
 					react.createElement('i'), react.createElement('i'), react.createElement('i')),
 			);
 		};
-		// 把模型的流程描述规范成行(编号/分号/换行/首先其次…),供 md 列表渲染
-		const normalizeFlow = (flow) => {
-			let s = String(flow || '').trim();
-			if (!s) return [];
-			s = s.replace(/([;；])/g, '\n');
-			if (!/[\r\n]/.test(s)) {
-				// 单行成段的编号:"1 xxx"、"2. xxx" 拆行并保留编号
-				s = s.replace(/(?:^|\s)(\d{1,2})\s+(?=[^\d\s])/g, '\n$1. ');
-			}
-			s = s
-				.replace(/(^|\n)\s*(?:步骤\s*)?(\d{1,2})\s*[\.、:：)）]\s*/g, '\n$1. ')
-				.replace(/(^|\n)\s*(?:步骤\s*)?[一二三四五六七八九十]{1,3}\s*[\.、:：)）]\s*/g, '\n')
-				.replace(/(^|\n)\s*[①②③④⑤⑥⑦⑧⑨⑩⑪⑫]\s*/g, '\n')
-				.replace(/(^|\n)\s*(?:首先|其次|然后|接着|最后|再|之后)\s*[,，:：]?\s*/g, '\n');
-			return s.split('\n').map((x) => x.replace(/^[-*•]\s*/, '').trim()).filter(Boolean);
-		};
 		const mdInline = (s) => {
 			let t = escapeHtml(String(s));
 			t = t.replace(/`([^`\n]+)`/g, (m, c) => '<code class="cg-var" data-var="' + escapeHtml(c) + '">' + c + '</code>');
@@ -893,131 +877,29 @@ html[data-cg-panel-open] [data-phase=active] {
 			t = t.replace(/\*([^*\s][^*]*)\*/g, (m, c) => '<em>' + c + '</em>');
 			return t;
 		};
-		// 递归提取流程步骤文本:模型可能返回嵌套结构(数组套对象等),
-		// 一层层剥到字符串为止,任何 [object Object] 脏值一律丢弃
-		const extractFlowText = (v) => {
-			if (typeof v === 'string') {
-				const t = v.trim();
-				return t.includes('[object Object]') ? '' : t;
-			}
-			if (Array.isArray(v)) return v.map((x) => extractFlowText(x)).filter(Boolean).join('；');
-			if (v && typeof v === 'object') {
-				return extractFlowText(v.text || v.step || v.desc || v.description || v.content);
-			}
-			return '';
-		};
-	// 区间分割:给定函数体范围和步骤列表,返回 lineNo 所属的步骤下标。
-	// 锚定策略(按优先级):
-	//   1. 内容锚定——步骤文本中的反引号变量在代码中的实际出现位置(最可靠)
-	//   2. LLM 行号——步骤的 start/end 中点(长函数常有偏差)
-	//   3. 插值/等分——前后有效锚点线性插值,全无则等分函数体
-	// 锚点确定后把函数体完整切分成连续无缝分区,每一行恰属于一个步骤
-	const stepPartitionIndex = (lineNo, bodyStart, bodyEnd, steps, lines) => {
-		const n = steps.length;
-		if (n === 0 || bodyStart > bodyEnd) return -1;
-		const a = new Array(n);
-		let hasValid = false;
-		let searchFrom = bodyStart;
-		for (let i = 0; i < n; i++) {
-			const s = steps[i];
-			let anchor = NaN;
-			// 内容锚定:从步骤文本提取反引号标识符,在函数体中顺序搜索。
-			// 顺序约束(searchFrom 递增)保证步骤 i 的锚点在步骤 i-1 之后
-			if (lines) {
-				const varRe = /`([^`\n]+)`/g;
-				let m;
-				while ((m = varRe.exec(s.text)) !== null) {
-					const v = m[1].trim();
-					if (!v || v.length > 60 || !/^[A-Za-z_$]/.test(v)) continue;
-					const esc = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-					const re = new RegExp('(?<![A-Za-z0-9_$])' + esc + '(?![A-Za-z0-9_$])');
-					for (let k = Math.max(0, searchFrom - 1); k < Math.min(bodyEnd, lines.length); k++) {
-						if (re.test(lines[k])) { anchor = k + 1; break }
-					}
-					if (anchor === anchor) break; // found, not NaN
-				}
-			}
-			// 回退:LLM 行号(不得早于 searchFrom,防止逆序)
-			if (anchor !== anchor && s.start > 0 && s.end >= s.start) {
-				anchor = Math.max(searchFrom, (s.start + s.end) / 2);
-			}
-			if (anchor === anchor) { // not NaN
-				a[i] = anchor;
-				searchFrom = Math.floor(anchor) + 1;
-				hasValid = true;
-			} else {
-				a[i] = NaN;
-			}
-		}
-		if (!hasValid) {
-			return Math.min(n - 1, Math.max(0, Math.floor((lineNo - bodyStart) / Math.max(1, bodyEnd - bodyStart + 1) * n)));
-		}
-		// 插值缺失锚点:用前后有效锚点线性插值;边界外推
-		for (let i = 0; i < n; i++) {
-			if (a[i] === a[i]) continue;
-			let pI = -1, nI = -1;
-			for (let j = i - 1; j >= 0; j--) { if (a[j] === a[j]) { pI = j; break } }
-			for (let j = i + 1; j < n; j++) { if (a[j] === a[j]) { nI = j; break } }
-			if (pI >= 0 && nI >= 0) a[i] = a[pI] + (a[nI] - a[pI]) * (i - pI) / (nI - pI);
-			else if (pI >= 0) a[i] = a[pI] + (bodyEnd - a[pI]) / (n - pI) * (i - pI);
-			else a[i] = bodyStart + (a[nI] - bodyStart) / (nI + 1) * (i + 0.5);
-		}
-		// 分区查找:相邻锚点中点为分界,lineNo 落在哪段就返回该下标
-		for (let i = 0; i < n - 1; i++) {
-			if (lineNo <= (a[i] + a[i + 1]) / 2) return i;
-		}
-		return n - 1;
+	// 严格按服务端校验后的绝对行号范围命中,不再猜测或填补空隙。
+	const stepPartitionIndex = (lineNo, steps) => {
+		if (!Array.isArray(steps)) return -1;
+		return steps.findIndex((s) => lineNo >= s.start && lineNo <= s.end);
 	};
-	// 统一解析流程步骤:优先 flowSteps,回退递归解析 flow 数组,再回退字符串
+	const GUIDE_SUMMARY_INDEX = -2;
+	// 摘要只对应函数头；函数体必须精确命中某个 flow 步骤，否则不映射任何解读项。
+	const guideItemIndex = (lineNo, fnStart, headerEnd, steps) => {
+		if (lineNo >= fnStart && lineNo <= headerEnd) return GUIDE_SUMMARY_INDEX;
+		return stepPartitionIndex(lineNo, steps);
+	};
+	// 只接受带合法绝对范围的新格式 flowSteps。
 	const stepsOf = (f) => {
 			if (Array.isArray(f.flowSteps) && f.flowSteps.length > 0) {
 				const out = f.flowSteps.map((s) => ({
-					start: Number((s && s.start) || 0) || 0,
-					end: Number((s && s.end) || 0) || 0,
-					text: extractFlowText(s && s.text),
-				})).filter((s) => s.text);
-				if (out.length > 0) return out;
-			}
-			if (Array.isArray(f.flow)) {
-				const out = f.flow.map((s) => {
-					if (typeof s === 'string') return { start: 0, end: 0, text: extractFlowText(s) };
-					if (s && typeof s === 'object') {
-						const text = extractFlowText(s.text || s.step || s.desc || s.description || s.content);
-						if (!text) return null;
-						return {
-							start: Math.round(Number(s.start) || 0) || 0,
-							end: Math.round(Number(s.end) || 0) || 0,
-							text,
-						};
-					}
-					return null;
-				}).filter(Boolean);
+					start: Number(s && s.start),
+					end: Number(s && s.end),
+					text: typeof (s && s.text) === 'string' ? s.text.trim() : '',
+				})).filter((s) => s.text && Number.isFinite(s.start) && Number.isFinite(s.end)
+					&& s.start > 0 && s.end >= s.start);
 				if (out.length > 0) return out;
 			}
 			return null;
-		};
-		// Markdown 风格渲染:有序列表(自动编号),延续行并入列表,其余为段落
-		const renderFlowMd = (flow) => {
-			const src = Array.isArray(flow)
-				? flow.map((s) => extractFlowText(s)).filter(Boolean).join('\n')
-				: flow;
-			const lines = normalizeFlow(src).filter((x) => !x.includes('[object Object]'));
-			if (lines.length === 0) return '';
-			let out = '';
-			let listOpen = null;
-			for (const line of lines) {
-				const om = /^(\d{1,2})[\.、:：)）]\s+(.*)$/.exec(line);
-				if (om) {
-					if (listOpen !== 'ol') { if (listOpen) out += '</' + listOpen + '>'; out += '<ol>'; listOpen = 'ol' }
-					out += '<li>' + mdInline(om[2]) + '</li>';
-				} else if (listOpen !== null) {
-					out += '<li>' + mdInline(line) + '</li>';
-				} else {
-					out += '<p>' + mdInline(line) + '</p>';
-				}
-			}
-			if (listOpen !== null) out += '</' + listOpen + '>';
-			return out;
 		};
 
 		// 调用图视图状态缓存:按文件路径记住 缩放/滚动 位置,切页签回来不复位。
@@ -1897,12 +1779,20 @@ html[data-cg-panel-open] [data-phase=active] {
 		const jumpTargetLine = (fn, content) => {
 			if (!content) return fn.start;
 			const lines = contentLines(content);
+			const baseName = String(fn.name || '').split('.').pop();
+			if (!baseName) return fn.start;
+			const escaped = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+			const named = escaped + '\\b';
+			const definitionRe = new RegExp(
+				'^\\s*(?:(?:export\\s+)?(?:async\\s+)?function\\*?\\s+' + named
+				+ '|(?:async\\s+)?def\\s+' + named
+				+ '|(?:pub\\s+)?(?:async\\s+)?fn\\s+' + named
+				+ '|func\\s+(?:\\([^)]*\\)\\s*)?' + named
+				+ '|(?:const|let|var)\\s+' + named
+				+ '|(?:async\\s+)?' + escaped + '\\s*\\()'
+			);
 			for (let k = fn.start; k <= Math.min(lines.length, fn.start + 20); k++) {
-				if (/^\s*(?:async\s+)?def\s/.test(lines[k - 1])
-					|| /^\s*(?:export\s+)?(?:async\s+)?function\s/.test(lines[k - 1])
-					|| /^\s*(?:func|fn)\s/.test(lines[k - 1])
-					|| /^\s*class\s/.test(lines[k - 1])
-					|| /^\s*(?:const|let|var)\s/.test(lines[k - 1])) return k;
+				if (definitionRe.test(lines[k - 1])) return k;
 			}
 			return fn.start;
 		};
@@ -3051,56 +2941,44 @@ html[data-cg-panel-open] [data-phase=active] {
 				}, 2000);
 			};
 
-			// 按代码行标识符匹配解读项:行 token 与解读项反引号变量有交集即命中
-			const matchStepByTokens = (lis, lineText) => {
-				const tokens = lineText.match(/[A-Za-z_$][\w$]*/g) || [];
-				if (tokens.length === 0) return null;
-				for (const li of lis) {
-					const vars = Array.from(li.querySelectorAll('.cg-var')).map((v) => (v.getAttribute('data-var') || ''));
-					if (vars.some((v) => tokens.indexOf(v) >= 0)) return li;
+			const clearGuideItemFlash = () => {
+				if (itemFlashTimerRef.current !== null) {
+					clearTimeout(itemFlashTimerRef.current);
+					itemFlashTimerRef.current = null;
 				}
-				return null;
+				if (itemFlashElRef.current) {
+					itemFlashElRef.current.classList.remove('cg-item-flash');
+					itemFlashElRef.current = null;
+				}
 			};
 
-			// 点代码行 → 对应解读项闪烁 1 次(底色 2 秒):函数头区域 → 主解读区;
-			// 行落在步骤范围内 → 对应步骤;空隙行按标识符匹配/位置比例就近,
-			// 都不中 → 主解读区。无步骤数据(旧格式)走标识符匹配
+			// 点代码行 → 对应解读项闪烁 1 次(底色 2 秒):函数头 → 摘要，步骤范围 → 对应步骤；
+			// 函数体内未被步骤覆盖的行不映射任何解读项。
 			const flashGuideItem = (idx, lineNo) => {
 				const guideEl = guideRef.current;
 				const card = guideEl ? guideEl.querySelector('.cg-card[data-idx="' + idx + '"]') : null;
 				if (!card) return false;
 				const fn = file && file.functions ? file.functions[idx] : null;
 				const main = card.querySelector('.cg-card-main');
-				// 函数头区域(装饰器/签名/def 行)→ 主解读区闪烁
 				const headerEnd = fn ? jumpTargetOf(fn) : 0;
-				if (fn && lineNo >= fn.start && lineNo <= headerEnd) {
+				const steps = fn ? stepsOf(fn) : null;
+				const targetIndex = fn ? guideItemIndex(lineNo, fn.start, headerEnd, steps) : -1;
+				if (targetIndex === GUIDE_SUMMARY_INDEX) {
 					flashItemEl(main);
 					return true;
 				}
 				const lis = card.querySelectorAll('.cg-card-flow-md li');
-				const steps = fn ? stepsOf(fn) : null;
-				let el = null;
-				if (steps && steps.length > 0 && lis.length > 0) {
-					const codeLines = file && file.content ? contentLines(file.content) : null;
-					const j = stepPartitionIndex(lineNo, headerEnd + 1, fn.end, steps, codeLines);
-					if (j >= 0 && j < lis.length) el = lis[j];
+				if (targetIndex < 0 || targetIndex >= lis.length) {
+					clearGuideItemFlash();
+					return false;
 				}
-				if (!el) {
-					const lines = file ? contentLines(file.content) : [];
-					el = matchStepByTokens(lis, lines[lineNo - 1] || '');
-					if (!el && lis.length > 0 && fn) {
-						const ratio = (lineNo - fn.start) / Math.max(1, fn.end - fn.start + 1);
-						el = lis[Math.min(lis.length - 1, Math.floor(ratio * lis.length))];
-					}
-					if (!el) el = main;
-				}
-				flashItemEl(el);
+				flashItemEl(lis[targetIndex]);
 				return true;
 			};
 
 			const flashItemEl = (el) => {
 				if (!el) return;
-				if (itemFlashElRef.current) itemFlashElRef.current.classList.remove('cg-item-flash');
+				clearGuideItemFlash();
 				itemFlashElRef.current = el;
 				const applyFlash = () => {
 					if (itemFlashElRef.current !== el) return;
@@ -3367,8 +3245,8 @@ html[data-cg-panel-open] [data-phase=active] {
 					warnBox(),
 					fns.map((f, i) => {
 						const steps = stepsOf(f);
-						const legacyHtml = !steps && f.flow ? renderFlowMd(f.flow) : '';
-						const flowBroken = !steps && !!f.flow && (!legacyHtml || legacyHtml.includes('[object Object]'));
+						const hasRawFlow = Array.isArray(f.flow) ? f.flow.length > 0 : !!String(f.flow || '').trim();
+						const flowBroken = !steps && hasRawFlow;
 						return react.createElement('div', {
 							key: f.id || i,
 							className: 'cg-card' + (active === i ? ' cg-card-on' : ''),
@@ -3382,7 +3260,7 @@ html[data-cg-panel-open] [data-phase=active] {
 								),
 								react.createElement('div', { className: 'cg-card-summary' }, f.summary),
 							),
-							steps || f.flow ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
+							steps ? react.createElement('div', { className: 'cg-card-label' }, '执行流程') : null,
 							steps
 								? react.createElement('div', { className: 'cg-card-flow-md' },
 									react.createElement('ol', null,
@@ -3394,8 +3272,8 @@ html[data-cg-panel-open] [data-phase=active] {
 										})),
 									),
 								)
-								: (f.flow ? react.createElement('div', { className: 'cg-card-flow-md', dangerouslySetInnerHTML: { __html: legacyHtml } }) : null),
-							flowBroken ? react.createElement('div', { className: 'cg-error', style: { padding: '2px 0 4px', fontSize: '11px' } }, '流程数据格式异常，点右上角「重新解读」更新') : null,
+								: null,
+							flowBroken ? react.createElement('div', { className: 'cg-error', style: { padding: '2px 0 4px', fontSize: '11px' } }, '流程数据缺少有效行号，点右上角「重新解读」重试') : null,
 							f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
 							f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
 						);

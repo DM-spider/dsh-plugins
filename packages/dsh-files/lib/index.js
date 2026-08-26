@@ -24,7 +24,7 @@ const MAX_CACHE_ENTRIES = 64
 const MAX_RAW_BYTES = 20 * 1024 * 1024 // 图片预览字节流上限
 
 const SINGLE_PROMPT = [
-  '你是一位资深代码讲解老师,面向初学者做逐函数解读。用户会贴出一段完整源代码。',
+  '你是一位资深代码讲解老师,面向初学者做逐函数解读。用户会贴出一段完整源代码,每行格式为“绝对行号| 源码”。',
   '你只做解读,不运行代码、不修改代码;源码里有几个函数就解读几个,一个不多一个不少。',
   '请输出严格合法的 JSON(不要输出 JSON 之外的任何内容,不要 Markdown 代码围栏),结构如下:',
   '{',
@@ -34,9 +34,11 @@ const SINGLE_PROMPT = [
   '  "callEdges": [["调用方函数名", "被调用函数名"]]',
   '}',
   '要求:',
-  '- start/end 是函数在源码中的真实行号(从 1 开始)',
+  '- 每行开头的“绝对行号|”只是定位标签,不是源码内容;signature 不得包含该标签',
+  '- start/end 必须直接引用源码行首标签中的绝对行号,不得自行计数或估算',
   '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复;如果代码里确实存在函数,严禁返回空数组,仔细逐段找,找到为止',
-  '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 是该步骤对应的代码行范围(函数内、从小到大、不重叠);没有步骤则 flow 为空数组',
+  '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 必须精确引用行首标签,范围位于函数体内、从小到大、不重叠;没有步骤则 flow 为空数组',
+  '- flow 行号会被客户端直接用于源码映射,偏差 1 行也会映射错误;短函数可少拆,其余每步不超过函数有效代码行数的约 1/3',
   '- flow 写作风格:业务描述在前,代码标识符在后做注释。写"初始化全局配置`build_config`：从参数构建运行配置`config`，分配批次号`run_id`",不要写"调用 `build_config` 生成 `config`，生成 `run_id`"',
   '- flow 中每个步骤必须引用代码里真实出现的变量名/函数名,用反引号包裹;反引号只包裹标识符本身(如 `train_scorecards`),不带参数和括号',
   '- flow 步骤严禁泛泛写"遍历列表"而不指明遍历哪个变量',
@@ -46,14 +48,15 @@ const SINGLE_PROMPT = [
 ].join('\n')
 
 const OUTLINE_PROMPT = [
-  '你是一位代码结构分析师。用户会贴出一个大文件的一段(可能很长)。',
+  '你是一位代码结构分析师。用户会贴出一个大文件的一段(可能很长),每行格式为“绝对行号| 源码”。',
   '任务:列出本段代码中所有函数/方法的定义,不解读、不运行、不修改。',
   '请输出严格合法的 JSON(不要输出 JSON 之外的任何内容,不要 Markdown 代码围栏),结构如下:',
   '{',
   '  "functions": [{"name": "函数名(类方法写成 Class.method)", "start": 起始行号, "end": 结束行号, "signature": "函数定义行的原始内容(去掉行首缩进,逐字照抄,绝不能改写;装饰器则从第一行装饰器开始)"}]',
   '}',
   '要求:',
-  '- start/end 是函数在完整文件中的真实绝对行号(从 1 开始),用户会告诉你本段的起始行号',
+  '- 每行开头的“绝对行号|”只是定位标签,不是源码内容;signature 不得包含该标签',
+  '- start/end 必须直接引用源码行首标签中的绝对行号,不得自行计数或估算',
   '- 一个不漏:装饰器、lambda 赋值、嵌套函数、类方法都要列出来,按行号升序,不要重复;如果代码里确实存在函数,严禁返回空数组,仔细逐段找,找到为止',
 ].join('\n')
 
@@ -70,7 +73,9 @@ const EXPLAIN_PROMPT = [
   '}',
   '要求:',
   '- functions 与给出的清单一一对应:一个不能少、一个不能多,name 严格一致',
-  '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 是该步骤对应的代码行范围(函数内、从小到大、不重叠);没有步骤则 flow 为空数组',
+  '- 源码每行开头的“绝对行号|”只是定位标签,不是源码内容',
+  '- flow 是数组,按执行顺序拆步骤;每个步骤的 start/end 必须直接引用源码行首标签中的绝对行号,范围位于函数体内、从小到大、不重叠;不得自行计数或估算;没有步骤则 flow 为空数组',
+  '- flow 行号会被客户端直接用于源码映射,偏差 1 行也会映射错误;短函数可少拆,其余每步不超过函数有效代码行数的约 1/3',
   '- flow 写作风格:业务描述在前,代码标识符在后做注释。写"初始化全局配置`build_config`：从参数构建运行配置`config`，分配批次号`run_id`",不要写"调用 `build_config` 生成 `config`，生成 `run_id`"',
   '- flow 中每个步骤必须引用代码里真实出现的变量名/函数名,用反引号包裹;反引号只包裹标识符本身(如 `train_scorecards`),不带参数和括号',
   '- flow 步骤严禁泛泛写"遍历列表"而不指明遍历哪个变量',
@@ -224,6 +229,13 @@ export function apply(ctx) {
     }
   }
 
+  // 给模型的源码统一加绝对行号。标签只用于定位,真实源码与客户端仍保持原样。
+  const numberedCode = (lines, from = 1, to = lines.length) => {
+    const lo = Math.max(1, from)
+    const hi = Math.min(lines.length, Math.max(lo, to))
+    return lines.slice(lo - 1, hi).map((line, i) => (lo + i) + '| ' + line).join('\n')
+  }
+
   // outline / explain 两阶段共用的 user 消息模板(全量与补全复用,避免漂移)
   const outlineUserText = (baseName, langHint, from, to, code) =>
     '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
@@ -260,7 +272,7 @@ export function apply(ctx) {
     }
     for (const job of jobs) {
       try {
-        const code = lines.slice(job.start, job.end).join('\n')
+        const code = numberedCode(lines, job.start + 1, job.end)
         const { text, provider, model } = await llmCall(OUTLINE_PROMPT,
           outlineUserText(baseName, langHint, job.start + 1, job.end, code), OUTLINE_MAX_TOKENS)
         route = provider + '/' + model
@@ -354,7 +366,7 @@ export function apply(ctx) {
         cursor++
         const from = Math.max(1, w.minStart - 2)
         const to = Math.min(lines.length, w.maxEnd + 2)
-        const code = lines.slice(from - 1, to).join('\n')
+        const code = numberedCode(lines, from, to)
         const listText = w.funcs.map((f) => '- ' + f.name + ' (第 ' + f.start + ' – ' + f.end + ' 行)').join('\n')
         try {
           await runWindow(w, from, to, code, listText)
@@ -391,7 +403,7 @@ export function apply(ctx) {
 
   // 小/中脚本单次调用:输出与源码函数严格 1:1
   const analyzeSingle = async (lines, baseName, langHint) => {
-    const code = lines.join('\n')
+    const code = numberedCode(lines)
     const userText = '完整文件名: ' + baseName + (langHint ? ' (语言/类型: ' + langHint + ')' : '')
       + '\n\n```\n' + code + '\n```'
     const { text, provider, model } = await llmCall(SINGLE_PROMPT, userText, SINGLE_CALL_MAX_TOKENS)
@@ -436,6 +448,9 @@ export function apply(ctx) {
   // Chunked fallback for large scripts: outline + grouped explanation.
   const analyzeChunked = async (lines, baseName, langHint) => {
     const outlineRes = await outline(lines, baseName, langHint)
+    // Outline 行号决定 Explain 截取范围,必须先确定性校正,避免错误范围
+    // 让第二阶段看到错误代码片段。okey 保持不变,继续作为跨阶段稳定键。
+    correctRanges(outlineRes.functions, lines, langHint)
     const explainRes = await explain(lines, outlineRes.functions, baseName, langHint)
     return {
       functions: explainRes.functions,
@@ -530,7 +545,8 @@ export function apply(ctx) {
 
   // 行号校正:模型数行不准,用签名(去空白)反查真实起始行;Python 的结束行
   // 按缩进规则推导(缩进回到 def 行层级即结束),花括号语言按括号配对。
-  // 装饰器:锚定最后一行签名(def 行)再向上吸收 @ 行,跳转落在装饰器上
+  // Python 优先按函数名定位真实 def；其他语言以签名首行定位。装饰器向上
+  // 吸收连续 @ 行,避免把多行签名的参数续行误当成函数起点。
   const correctRanges = (functions, lines, langHint) => {
     const norm = (s) => String(s).replace(/\s+/g, '')
     const normLines = lines.map(norm)
@@ -550,6 +566,19 @@ export function apply(ctx) {
 
     // 搜索半径与文件大小挂钩:小文件 ±30,大文件按 10% 总行数,上限 ±120
     const searchRadius = Math.min(Math.max(30, Math.floor(lines.length * 0.1)), 120)
+    const isPython = langHint === 'py' || langHint === 'pyw'
+      || /^\s*def\s/m.test(lines.slice(0, Math.min(200, lines.length)).join('\n'))
+
+    const baseNameOf = (f) => f.name && f.name.includes('.') ? f.name.split('.').pop() : f.name
+    const pickClosest = (candidates, f) => {
+      let best = -1
+      let bestDist = Infinity
+      for (const i of candidates || []) {
+        const dist = Math.abs(i - f.start)
+        if (dist < bestDist) { best = i; bestDist = dist }
+      }
+      return best
+    }
 
     // 最近未占用候选选择器(签名回退 / 函数名兜底共用)
     const pickNearest = (candidates, f) => {
@@ -567,12 +596,21 @@ export function apply(ctx) {
 
     for (const f of functions) {
       let found = -1
+      const baseName = baseNameOf(f)
+
+      // Python 的 def 行可从源码确定,优先级必须高于模型返回的 signature。
+      // 多行签名的最后一行只是续行,不能作为函数起点。
+      if (isPython && baseName) {
+        const candidates = defIndex.get(baseName)
+        if (candidates && candidates.length > 0) found = pickClosest(candidates, f)
+      }
 
       // ── 阶段 A:签名锚定(原始逻辑,窗口动态化) ──
-      if (f.signature) {
+      if (found === -1 && f.signature) {
         const sigAll = String(f.signature).split('\n').map((x) => norm(x)).filter((x) => x.length >= 4)
         if (sigAll.length > 0) {
-          const anchor = sigAll[sigAll.length - 1]
+          // 首行才是定义/装饰器起点；末行在多行签名中通常只是参数续行。
+          const anchor = sigAll[0]
 
           // A1:动态窗口局部搜索
           const lo = Math.max(1, f.start - searchRadius)
@@ -603,7 +641,6 @@ export function apply(ctx) {
 
       // ── 阶段 B:函数名兜底(signature 为空/失效时仍有修正能力) ──
       if (found === -1 && f.name) {
-        const baseName = f.name.includes('.') ? f.name.split('.').pop() : f.name
         const candidates = defIndex.get(baseName)
         if (candidates && candidates.length > 0) {
           found = pickNearest(candidates, f)
@@ -627,11 +664,10 @@ export function apply(ctx) {
       if (f.end < f.start) f.end = f.start
     }
     functions.sort((a, b) => a.start - b.start || a.end - b.end)
-    const isPython = langHint === 'py' || langHint === 'pyw'
-      || /^\s*def\s/m.test(lines.slice(0, Math.min(200, lines.length)).join('\n'))
     if (isPython) {
       // 缩进规则:缩进回到 def 行层级即函数结束;start 可能是装饰器行,
       // 缩进基准必须取 def 行本身
+      const pythonMeta = new Map()
       for (const f of functions) {
         let defIdx = -1
         for (let k = f.start; k <= Math.min(lines.length, f.start + 20); k++) {
@@ -640,6 +676,7 @@ export function apply(ctx) {
         if (defIdx < 0) continue
         const dm = /^(\s*)/.exec(lines[defIdx - 1])
         const defIndent = dm ? dm[1].length : 0
+        pythonMeta.set(f, { defIdx, defIndent })
         let lastContent = defIdx
         // 三引号字符串跨行时中间行常顶格:顶格行不能算"缩进回到基级",
         // 否则函数体被提前截断
@@ -658,7 +695,12 @@ export function apply(ctx) {
             }
           }
           if (/^\s*$/.test(line)) continue
-          if (/^\s*[)\]},]+/.test(line)) continue // 续行收尾符不算回到基级
+          if (/^\s*[)\]},]+/.test(line)) {
+            // 续行收尾符不表示函数结束,但它仍属于函数体。
+            const closeIndent = /^(\s*)/.exec(line)[1].length
+            if (closeIndent > defIndent) lastContent = ln
+            continue
+          }
           const indent = /^(\s*)/.exec(line)[1].length
           const triple = /('''|""")/.exec(line)
           if (triple) {
@@ -673,6 +715,19 @@ export function apply(ctx) {
         }
         if (lastContent >= f.start) f.end = lastContent
       }
+      // 合法嵌套函数的缩进更深,允许区间包含；相同缩进的兄弟函数绝不
+      // 应重叠,即使某个模型 end 异常也在这里确定性截断。
+      const previousAtIndent = new Map()
+      for (const cur of functions) {
+        const cm = pythonMeta.get(cur)
+        if (!cm) continue
+        const prev = previousAtIndent.get(cm.defIndent)
+        if (prev && prev.end >= cur.start) prev.end = Math.max(prev.start, cur.start - 1)
+        previousAtIndent.set(cm.defIndent, cur)
+      }
+
+      // 保存到本次 correctRanges 的后置校验使用,不暴露到客户端。
+      for (const [f, meta] of pythonMeta) f._pythonDefIndent = meta.defIndent
     } else {
       // 花括号语言:签名括号闭合处(paren=0)的 { 为函数体起点,再做花括号
       // 配对算结束行(剥离字符串/注释干扰);无花括号形式保持模型给的 end。
@@ -761,6 +816,9 @@ export function apply(ctx) {
     for (const f of functions) {
       const container = functions.find((g) => g !== f && f.start > g.start && f.start <= g.end)
       if (!container) continue
+      // Python 中更深缩进代表合法嵌套函数,不能当作错误位置搬走。
+      if (isPython && Number.isFinite(f._pythonDefIndent) && Number.isFinite(container._pythonDefIndent)
+        && f._pythonDefIndent > container._pythonDefIndent) continue
       const baseName = f.name.includes('.') ? f.name.split('.').pop() : f.name
       const nameEsc = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       const nameRe = new RegExp('^\\s*(?:async\\s+)?(?:def|function\\*?|class)\\s+' + nameEsc + '\\b')
@@ -775,12 +833,13 @@ export function apply(ctx) {
         if (f.end < f.start) f.end = f.start
       }
     }
+    for (const f of functions) delete f._pythonDefIndent
     functions.sort((a, b) => a.start - b.start || a.end - b.end)
     return functions
   }
 
-  // 步骤流归一:只保留有效步骤、行号范围夹进函数区间、强制单调不重叠,
-  // 客户端才能把点击的代码行精确映射到解读步骤
+  // 步骤流归一:保留模型从绝对行号标签读取的范围,只做类型转换、
+  // 函数区间裁剪和无效值过滤。不得再按函数 start 的误差整体平移。
   const normalizeFlowSteps = (functions) => {
     const stepTextOf = (s) => {
       if (typeof s === 'string') {
@@ -796,20 +855,29 @@ export function apply(ctx) {
       if (!Array.isArray(raw)) { f.flowSteps = null; continue }
       const steps = raw
         .map((s) => ({
-          start: Math.max(1, Math.round(Number((s && s.start) || 0)) || 1),
-          end: Math.max(1, Math.round(Number((s && s.end) || 0)) || 1),
+          start: Math.round(Number(s && s.start)),
+          end: Math.round(Number(s && s.end)),
           text: stepTextOf(s),
         }))
-        .filter((s) => s.text)
-        .sort((a, b) => a.start - b.start)
+        .filter((s) => s.text && Number.isFinite(s.start) && Number.isFinite(s.end))
+        .filter((s) => s.start <= f.end && s.end >= f.start)
+        .map((s) => ({
+          start: Math.min(Math.max(s.start, f.start), f.end),
+          end: Math.min(Math.max(s.end, f.start), f.end),
+          text: s.text,
+        }))
+        .filter((s) => s.end >= s.start)
+        .sort((a, b) => a.start - b.start || a.end - b.end)
       const out = []
-      let prevEnd = f.start - 1
       for (const s of steps) {
-        const st = Math.min(Math.max(s.start, prevEnd + 1), f.end)
-        const en = Math.min(Math.max(s.end, st), f.end)
-        if (st > f.end) break
-        out.push({ start: st, end: en, text: s.text })
-        prevEnd = en
+        const prev = out[out.length - 1]
+        if (prev && s.start <= prev.end) {
+          // 保留后一步的显式起点,仅收窄前一步的重叠尾部；同起点无法
+          // 无损拆分时保留先到步骤,避免把多个步骤挤到函数末行。
+          if (s.start <= prev.start) continue
+          prev.end = s.start - 1
+        }
+        out.push(s)
       }
       if (out.length > 0) f.flowSteps = out
       else { f.flowSteps = null; f.flow = '' }
@@ -817,48 +885,64 @@ export function apply(ctx) {
     return functions
   }
 
-  // 步骤锚定:模型给的行号范围会漂移,改按步骤文本里的反引号变量定位:
-  // 每步锚在函数体内该变量首次出现的行(移动游标保证单调),
-  // 步骤范围 = [锚_i, 锚_{i+1}-1],最后一步延伸到函数末尾
+  // 最终范围校验:步骤必须位于实际函数体代码区。保留显式 start/end,
+  // 不按 token 重定位、不填补间隙、不把最后一步强行延伸到函数末尾。
   const anchorFlowSteps = (functions, lines) => {
-    const tokenRe = (tok) => new RegExp('(?<![A-Za-z0-9_$])' + tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])')
-    const tokensOf = (text) => {
-      const out = []
-      const re = /`([^`]+)`/g
-      let m
-      while ((m = re.exec(String(text))) !== null) {
-        const v = m[1].trim()
-        if (!v) continue
-        out.push(v)
-        const first = /^[A-Za-z_$][\w$]*/.exec(v)
-        if (first && first[0] !== v) out.push(first[0])
+    const findCodeStart = (f) => {
+      let ln = f.start
+      while (ln <= f.end && /^\s*@/.test(lines[ln - 1])) ln++
+      let parenDepth = 0
+      let pastSig = false
+      const sigLimit = Math.min(f.end, ln + 30)
+      for (; ln <= sigLimit; ln++) {
+        const line = lines[ln - 1]
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i]
+          if (ch === '#') break
+          if (ch === '/' && line[i + 1] === '/') break
+          if (ch === '(' || ch === '[') parenDepth++
+          else if (ch === ')' || ch === ']') parenDepth = Math.max(0, parenDepth - 1)
+          else if (parenDepth === 0 && (ch === ':' || ch === '{')) pastSig = true
+        }
+        if (pastSig) { ln++; break }
       }
-      return out
+      if (!pastSig) return f.start
+      if (ln <= f.end) {
+        const trimmed = lines[ln - 1].trim()
+        let tq = null
+        if (trimmed.startsWith('"""')) tq = '"""'
+        else if (trimmed.startsWith("'''")) tq = "'''"
+        if (tq) {
+          const rest = trimmed.slice(3)
+          if (rest.indexOf(tq) >= 0) {
+            ln++
+          } else {
+            for (ln++; ln <= f.end; ln++) {
+              if (lines[ln - 1].includes(tq)) { ln++; break }
+            }
+          }
+        }
+      }
+      return Math.min(ln, f.end)
     }
     for (const f of functions) {
       const steps = f.flowSteps
       if (!Array.isArray(steps) || steps.length === 0) continue
-      const body = lines.slice(f.start - 1, f.end)
-      let cursor = f.start
+      const codeStart = findCodeStart(f)
       const out = []
       for (const st of steps) {
-        const toks = tokensOf(st.text)
-        let anchor = -1
-        for (const tok of toks) {
-          const re = tokenRe(tok)
-          for (let i = cursor - f.start; i < body.length; i++) {
-            if (re.test(body[i])) { anchor = f.start + i; break }
-          }
-          if (anchor > 0) break
+        const start = Math.max(st.start, codeStart)
+        const end = Math.min(st.end, f.end)
+        if (start > end) continue
+        const prev = out[out.length - 1]
+        if (prev && start <= prev.end) {
+          if (start <= prev.start) continue
+          prev.end = start - 1
         }
-        if (anchor === -1) anchor = Math.max(cursor, Math.min(st.start, f.end))
-        out.push({ start: anchor, end: anchor, text: st.text })
-        cursor = Math.max(cursor, anchor + 1)
+        out.push({ start, end, text: st.text })
       }
-      for (let i = 0; i < out.length; i++) {
-        out[i].end = i + 1 < out.length ? Math.max(out[i + 1].start - 1, out[i].start) : f.end
-      }
-      f.flowSteps = out
+      if (out.length > 0) f.flowSteps = out
+      else { f.flowSteps = null; f.flow = '' }
     }
     return functions
   }
@@ -1201,7 +1285,7 @@ export function apply(ctx) {
             const from = Math.min(Math.max(1, g.from), retryLines.length)
             const to = Math.min(Math.max(from, g.to), retryLines.length)
             try {
-              const code = retryLines.slice(from - 1, to).join('\n')
+              const code = numberedCode(retryLines, from, to)
               const { text } = await llmCall(OUTLINE_PROMPT,
                 outlineUserText(retryBase, retryHint, from, to, code), OUTLINE_MAX_TOKENS)
               const parsed = parseJson(text)
@@ -1223,6 +1307,7 @@ export function apply(ctx) {
                 })
               }
               if (fresh.length > 0) {
+                correctRanges(fresh, retryLines, retryHint)
                 const res = await explain(retryLines, fresh, retryBase, retryHint)
                 funcs.push(...res.functions)
                 for (const key of res.edgeSet) edgeSet.add(key)
@@ -1247,7 +1332,7 @@ export function apply(ctx) {
               rCursor++
               const from = Math.min(Math.max(1, g.from), retryLines.length)
               const to = Math.min(Math.max(from, g.to), retryLines.length)
-              const code = retryLines.slice(from - 1, to).join('\n')
+              const code = numberedCode(retryLines, from, to)
               const listText = g.funcs.map((f) => '- ' + f.name + ' (第 ' + f.start + ' – ' + f.end + ' 行)').join('\n')
               try {
                 const { text } = await llmCall(EXPLAIN_PROMPT,
