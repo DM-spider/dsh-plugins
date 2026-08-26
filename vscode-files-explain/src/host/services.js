@@ -180,7 +180,22 @@ export function createServices(deps) {
     const f = s.indexOf('{')
     const l = s.lastIndexOf('}')
     if (f >= 0 && l > f) s = s.slice(f, l + 1)
-    return JSON.parse(s)
+    try {
+      return JSON.parse(s)
+    } catch (err) {
+      let repaired = s
+        .replace(/\\\r?\n/g, '\\n')
+        .replace(/\\\t/g, '\\t')
+        .replace(/\\u(?![0-9a-fA-F]{4})/g, 'u')
+      let prev
+      do {
+        prev = repaired
+        repaired = repaired.replace(/\\([^"\\\/bfnrtu])/g, '$1')
+      } while (repaired !== prev)
+      repaired = repaired.replace(/([\w\]])\["([^"]{1,80})"\]/g, '$1[\\"$2\\"]')
+      if (repaired === s) throw err
+      return JSON.parse(repaired)
+    }
   }
 
   // callEdges → edgeSet 键(a\u0000b):只保留两端非空且互异的成对数组

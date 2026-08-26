@@ -230,6 +230,10 @@ export function apply(ctx) {
         prev = repaired
         repaired = repaired.replace(/\\([^"\\\/bfnrtu])/g, '$1')
       } while (repaired !== prev)
+      // 模型有时在解读文本中输出 Python 下标语法 spec["edges"],
+      // 内层双引号会截断 JSON 字符串值;前缀必须是 \w 或 ],
+      // 避免误伤合法 JSON 数组(数组 [ 前是 : 或 , 等非 \w 字符)
+      repaired = repaired.replace(/([\w\]])\["([^"]{1,80})"\]/g, '$1[\\"$2\\"]')
       if (repaired === s) throw decorate(err, s)
       try {
         return JSON.parse(repaired)
