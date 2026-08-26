@@ -3284,7 +3284,7 @@ html[data-cg-panel-open] [data-phase=active] {
 							flowBroken ? react.createElement('div', { className: 'cg-error', style: { padding: '2px 0 4px', fontSize: '11px' } }, '流程数据缺少有效行号，点右上角「重新解读」重试') : null,
 							f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
 							f.formula ? react.createElement('ul', { className: 'cg-card-formula' },
-							...f.formula.split(/;\s*/).map((s) => s.replace(/^•\s*/, '').trim()).filter(Boolean)
+							...f.formula.split(/;\s*(?=`)/).map((s) => s.replace(/^•\s*/, '').trim()).filter(Boolean)
 								.map((item, i) => react.createElement('li', { key: i, dangerouslySetInnerHTML: { __html: mdFormula(item) } }))
 						) : null,
 						);
