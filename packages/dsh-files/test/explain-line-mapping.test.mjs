@@ -78,6 +78,9 @@ test('单次解读给每行添加绝对行号并保留明确步骤范围', async
 
   assert.match(calls[0].messages[0].content[0].text, /1\| def sample\(\):/)
   assert.match(calls[0].messages[0].content[0].text, /3\|     return value/)
+  assert.match(calls[0].system, /处理依据或条件 \+ 核心动作 \+ 本步骤结果/)
+  assert.match(calls[0].system, /行号只写入 start\/end,供客户端点击映射/)
+  assert.match(calls[0].system, /不得概括 start\/end 范围之外的代码/)
   assert.deepEqual(data.functions[0].flowSteps.map(({ start, end }) => [start, end]), [[2, 2], [3, 3]])
 })
 
@@ -108,6 +111,8 @@ test('分段解读在 Explain 截取源码前校正 Outline 函数范围', async
   assert.match(explainText, /target \(第 510 – 512 行\)/)
   assert.match(explainText, /510\| def target\(\):/)
   assert.doesNotMatch(explainText, /448\|/)
+  assert.match(calls[1].system, /处理依据或条件 \+ 核心动作 \+ 本步骤结果/)
+  assert.match(calls[1].system, /行号只写入 start\/end,供客户端点击映射/)
   assert.deepEqual(data.functions[0].flowSteps.map(({ start, end }) => [start, end]), [[511, 511]])
 })
 
