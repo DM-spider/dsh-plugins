@@ -296,11 +296,14 @@ html[data-cg-panel-open] [data-phase=active] {
   color: var(--dsw-alias-brand-primary) !important;
 }
 .cg-card-formula {
-  margin: 4px 0 0; padding: 6px 8px;
+  margin: 4px 0 0; padding: 4px 8px 4px 24px;
   background: var(--dsw-alias-bg-layer-2);
   border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px;
-  white-space: pre-wrap; word-break: break-word;
+  word-break: break-word; list-style: disc;
+}
+.cg-card-formula li {
+  padding: 2px 0;
 }
 .cg-empty { color: var(--dsw-alias-label-secondary); padding: 16px 12px; font-size: 12px; }
 .cg-error { color: var(--dsw-alias-state-error-primary); padding: 12px; font-size: 12px; white-space: pre-wrap; }
@@ -3275,7 +3278,10 @@ html[data-cg-panel-open] [data-phase=active] {
 								: null,
 							flowBroken ? react.createElement('div', { className: 'cg-error', style: { padding: '2px 0 4px', fontSize: '11px' } }, '流程数据缺少有效行号，点右上角「重新解读」重试') : null,
 							f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
-							f.formula ? react.createElement('div', { className: 'cg-card-formula' }, f.formula) : null,
+							f.formula ? react.createElement('ul', { className: 'cg-card-formula' },
+							...f.formula.split(/;\s*/).map((s) => s.replace(/^•\s*/, '').trim()).filter(Boolean)
+								.map((item) => react.createElement('li', null, item))
+						) : null,
 						);
 					}),
 				);
