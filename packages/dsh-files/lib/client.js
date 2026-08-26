@@ -880,6 +880,11 @@ html[data-cg-panel-open] [data-phase=active] {
 			t = t.replace(/\*([^*\s][^*]*)\*/g, (m, c) => '<em>' + c + '</em>');
 			return t;
 		};
+		const mdFormula = (s) => {
+			let t = escapeHtml(String(s));
+			t = t.replace(/`([^`\n]+)`/g, (m, c) => '<code class="cg-var" data-var="' + escapeHtml(c) + '">' + c + '</code>');
+			return t;
+		};
 	// 严格按服务端校验后的绝对行号范围命中,不再猜测或填补空隙。
 	const stepPartitionIndex = (lineNo, steps) => {
 		if (!Array.isArray(steps)) return -1;
@@ -3280,7 +3285,7 @@ html[data-cg-panel-open] [data-phase=active] {
 							f.formula ? react.createElement('div', { className: 'cg-card-label' }, '关键公式') : null,
 							f.formula ? react.createElement('ul', { className: 'cg-card-formula' },
 							...f.formula.split(/;\s*/).map((s) => s.replace(/^•\s*/, '').trim()).filter(Boolean)
-								.map((item) => react.createElement('li', null, item))
+								.map((item, i) => react.createElement('li', { key: i, dangerouslySetInnerHTML: { __html: mdFormula(item) } }))
 						) : null,
 						);
 					}),
