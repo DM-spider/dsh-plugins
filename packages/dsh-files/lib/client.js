@@ -110,9 +110,17 @@ html[data-cg-panel-open] [data-phase=active] {
   border-radius: 6px 6px 0 0;
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-secondary);
-  font-size: 11px; cursor: pointer; user-select: none;
+  font-size: 11px; cursor: grab; user-select: none; position: relative;
 }
+.cg-filetab:active { cursor: grabbing; }
 .cg-filetab:hover { color: var(--dsw-alias-label-primary); }
+.cg-filetab-dragging { opacity: .45; }
+.cg-filetab-drop-before::before, .cg-filetab-drop-after::after {
+  content: ''; position: absolute; top: 2px; bottom: 2px; width: 2px;
+  border-radius: 2px; background: var(--dsw-alias-brand-primary);
+}
+.cg-filetab-drop-before::before { left: -2px; }
+.cg-filetab-drop-after::after { right: -2px; }
 .cg-filetab-on {
   background: var(--dsw-alias-bg-overlay);
   color: var(--dsw-alias-label-primary);
@@ -1109,6 +1117,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		// 解读在源码区内展开/收起,面板宽度不变。
 		const store = {
 			open: false,
+			treeOpen: true,
 			pane: { tree: 240, code: 485, guide: 240 },
 			query: '',
 			searching: false,
@@ -1126,11 +1135,17 @@ html[data-cg-panel-open] [data-phase=active] {
 				&& p.code >= p.guide + 5 + 240 && p.code <= 2200) {
 				store.pane = { tree: p.tree, code: p.code, guide: p.guide };
 			}
+			store.treeOpen = localStorage.getItem('cg-tree-open') !== 'false';
 		} catch (_) { /* localStorage 不可用时忽略 */ }
 		const emit = () => { for (const fn of Array.from(store.listeners)) fn() };
 		const subscribe = (fn) => { store.listeners.add(fn); return () => { store.listeners.delete(fn) } };
 		const setOpen = (value) => { store.open = !!value; emit() };
 		const toggleOpen = () => setOpen(!store.open);
+		const setTreeOpen = (value) => {
+			store.treeOpen = !!value;
+			try { localStorage.setItem('cg-tree-open', String(store.treeOpen)); } catch (_) {}
+			emit();
+		};
 		const useStore = (selector) => {
 			const sel = selector || null;
 			const snapRef = react.useRef(sel ? sel(store) : store);
@@ -1307,9 +1322,12 @@ html[data-cg-panel-open] [data-phase=active] {
 		// 源码区有效宽:钳制到 [下限, 上限]
 		const effCodeOf = (pane, showGuide) => Math.min(Math.max(pane.code, codeFloorFor(pane, showGuide)), codeCeilFor(pane));
 		// 源码可见宽:解读打开时从源码区划出 解读+分栏线,关闭时源码收回
-		const sourceWidthOf = (pane, showGuide) => showGuide
-			? Math.max(PANE_MIN_PX, effCodeOf(pane, showGuide) - pane.guide - PANE_DIV_W)
-			: effCodeOf(pane, false);
+		// 文件树收起时不缩小面板，而是把树和分栏线占用的宽度交给源码区。
+		const visibleCodeWidthOf = (pane, showGuide, treeOpen) => effCodeOf(pane, showGuide)
+			+ (treeOpen ? 0 : pane.tree + PANE_DIV_W);
+		const sourceWidthOf = (pane, showGuide, treeOpen = true) => showGuide
+			? Math.max(PANE_MIN_PX, visibleCodeWidthOf(pane, showGuide, treeOpen) - pane.guide - PANE_DIV_W)
+			: visibleCodeWidthOf(pane, false, treeOpen);
 
 		// ---------- syntax highlighting (self-contained, no runtime deps) ----------
 		// Extension -> language id for source rendering.
@@ -1695,6 +1713,7 @@ html[data-cg-panel-open] [data-phase=active] {
 			check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
 			file: 'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z',
 			folder: 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
+			folderStack: 'M4 22c-.55 0-1.02-.2-1.41-.59S2 20.55 2 20V6h2v14h14v2H4zm4-4c-.55 0-1.02-.2-1.41-.59S6 16.55 6 16V4c0-.55.2-1.02.59-1.41S7.45 2 8 2h5l2 2h5c.55 0 1.02.2 1.41.59S22 5.45 22 6v10c0 .55-.2 1.02-.59 1.41S20.55 18 20 18H8zm0-2h12V6h-5.83l-2-2H8v12z',
 			sidebar: 'M3 15h8v-2H3v2zm0 4h8v-2H3v2zm0-8h8V9H3v2zm0-6v2h8V5H3zm10 0h8v14h-8V5z',
 			eye: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z',
 			eyeOff: 'M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z',
@@ -1805,21 +1824,50 @@ html[data-cg-panel-open] [data-phase=active] {
 			return fn.start;
 		};
 
-		const findVarLineIn = (name, start, end, lines) => {
+		const quoteVariantsOf = (name) => {
+			const raw = String(name || '');
+			const variants = [raw];
+			const swapped = raw.replace(/\[\s*(['"])([^'"]*)\1\s*\]/g, (_all, quote, key) => {
+				const nextQuote = quote === "'" ? '"' : "'";
+				return '[' + nextQuote + key + nextQuote + ']';
+			});
+			if (swapped !== raw) variants.push(swapped);
+			return variants;
+		};
+		const findCodeRefIn = (name, start, end, lines) => {
 			const mkRe = (p) => new RegExp('(?<![A-Za-z0-9_$])' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_$])');
-			const tokenM = /^[A-Za-z_$][\w$]*/.exec(name);
-			const candidates = [name];
-			if (tokenM && tokenM[0] !== name) candidates.push(tokenM[0]);
-			const ranges = [[Math.max(1, start), Math.max(start, end)], [1, lines.length]];
-			for (const range of ranges) {
-				for (const c of candidates) {
+			const tokenM = /^[A-Za-z_$][\w$]*/.exec(String(name || ''));
+			const fullCandidates = quoteVariantsOf(name).filter(Boolean);
+			const tokenCandidates = tokenM && fullCandidates.indexOf(tokenM[0]) < 0 ? [tokenM[0]] : [];
+			const localRange = [Math.max(1, start), Math.max(start, end)];
+			const globalRange = [1, lines.length];
+			// 优先匹配当前函数内的完整表达式，避免过早退化到函数参数或同名变量。
+			const stages = [
+				{ range: localRange, candidates: fullCandidates, exact: true },
+				{ range: localRange, candidates: tokenCandidates, exact: false },
+				{ range: globalRange, candidates: fullCandidates, exact: true },
+				{ range: globalRange, candidates: tokenCandidates, exact: false },
+			];
+			for (const stage of stages) {
+				for (const c of stage.candidates) {
 					const re = mkRe(c);
-					for (let i = range[0]; i <= Math.min(range[1], lines.length); i++) {
-						if (re.test(lines[i - 1])) return i;
+					for (let i = stage.range[0]; i <= Math.min(stage.range[1], lines.length); i++) {
+						const match = re.exec(lines[i - 1]);
+						if (match) return { line: i, text: match[0], exact: stage.exact };
 					}
 				}
 			}
-			return -1;
+			return null;
+		};
+		const reorderTabs = (tabs, sourcePath, targetPath, side) => {
+			if (!Array.isArray(tabs) || sourcePath === targetPath) return tabs;
+			const source = tabs.find((tab) => tab.path === sourcePath);
+			if (!source) return tabs;
+			const next = tabs.filter((tab) => tab.path !== sourcePath);
+			const targetIndex = next.findIndex((tab) => tab.path === targetPath);
+			if (targetIndex < 0) return tabs;
+			next.splice(targetIndex + (side === 'after' ? 1 : 0), 0, source);
+			return next;
 		};
 
 		// ---------- useTabState: 页签/预览状态管理 ----------
@@ -1947,13 +1995,15 @@ html[data-cg-panel-open] [data-phase=active] {
 				e.preventDefault();
 				const target = file ? 'code' : 'tree';
 				const showGuide = !!(file && file.guideOn);
+				const visibleCodeW = visibleCodeWidthOf(store.pane, showGuide, store.treeOpen);
 				setDrag({
 					kind: 'outer',
 					target,
 					startX: e.clientX,
-					startW: target === 'code' ? effCodeOf(store.pane, showGuide) : store.pane.tree,
-					startCodeW: effCodeOf(store.pane, showGuide),
+					startW: target === 'code' ? visibleCodeW : store.pane.tree,
+					startCodeW: visibleCodeW,
 					startGuideW: store.pane.guide,
+					treeExtra: store.treeOpen ? 0 : store.pane.tree + PANE_DIV_W,
 				});
 			};
 
@@ -1962,9 +2012,10 @@ html[data-cg-panel-open] [data-phase=active] {
 				setDrag({
 					kind,
 					startX: e.clientX,
-					startCodeW: effCodeOf(store.pane, true),
+					startCodeW: visibleCodeWidthOf(store.pane, true, store.treeOpen),
+					startBaseCodeW: effCodeOf(store.pane, true),
 					startTreeW: store.pane.tree,
-					startSourceW: sourceWidthOf(store.pane, true),
+					startSourceW: sourceWidthOf(store.pane, true, store.treeOpen),
 				});
 			};
 
@@ -1980,19 +2031,23 @@ html[data-cg-panel-open] [data-phase=active] {
 						store.pane = { ...store.pane, tree: w };
 					} else {
 						const showGuide = !!(file && file.guideOn);
-						const min = codeFloorFor(store.pane, showGuide);
-						const w = Math.max(min, Math.min(dragMaxOf(store.pane.tree + PANE_DIV_W), drag.startW - dx));
+						const extra = drag.treeExtra || 0;
+						const min = codeFloorFor(store.pane, showGuide) + extra;
+						const visibleTreeW = store.treeOpen ? store.pane.tree + PANE_DIV_W : 0;
+						const w = Math.max(min, Math.min(dragMaxOf(visibleTreeW), drag.startW - dx));
+						const baseW = w - extra;
 						if (file && file.guideOn) {
 							const gRatio = drag.startGuideW / Math.max(1, drag.startCodeW - PANE_DIV_W);
-							const guideW = Math.max(PANE_MIN_PX, Math.min(Math.round((w - PANE_DIV_W) * gRatio), w - PANE_DIV_W - PANE_MIN_PX));
-							store.pane = { ...store.pane, code: w, guide: guideW };
+							const guideW = Math.max(PANE_MIN_PX, Math.min(Math.round((w - PANE_DIV_W) * gRatio), baseW - PANE_DIV_W - PANE_MIN_PX));
+							store.pane = { ...store.pane, code: baseW, guide: guideW };
 						} else {
-							store.pane = { ...store.pane, code: w };
+							store.pane = { ...store.pane, code: baseW };
 						}
 					}
 				} else if (drag.kind === 'code') {
 					const sourceW = Math.max(PANE_MIN_PX, Math.min(drag.startCodeW - PANE_DIV_W - PANE_MIN_PX, drag.startSourceW + dx));
-					store.pane = { ...store.pane, guide: drag.startCodeW - PANE_DIV_W - sourceW };
+					const guideW = Math.max(PANE_MIN_PX, Math.min(drag.startCodeW - PANE_DIV_W - sourceW, drag.startBaseCodeW - PANE_DIV_W - PANE_MIN_PX));
+					store.pane = { ...store.pane, guide: guideW };
 				} else if (drag.kind === 'tree') {
 					const w = Math.max(PANE_MIN_PX, Math.min(dragMaxOf(effCodeOf(store.pane, false) + PANE_DIV_W), drag.startTreeW - dx));
 					store.pane = { ...store.pane, tree: w };
@@ -2073,6 +2128,10 @@ html[data-cg-panel-open] [data-phase=active] {
 			const setActivePath = tm.setActivePath;
 			const setPreviewFile = tm.setPreview;
 			const setPreviewActive = (v) => tm.setPreviewActive(!!v);
+			const [tabDrag, setTabDrag] = react.useState(null);
+			const tabDragRef = react.useRef(null);
+			const tabDragPathRef = react.useRef(null);
+			const suppressTabClickRef = react.useRef(false);
 
 			const findState = file && file.find ? file.find : null;
 			const findMatches = react.useMemo(() => {
@@ -2255,13 +2314,13 @@ html[data-cg-panel-open] [data-phase=active] {
 					const open = '<mark class="cg-var-hit">', close = '</mark>';
 					const lineHtmls = baseHtmls.map((h, idx) => {
 						const lineNo = idx + 1;
-						if (lineNo < flashFn.start || lineNo > flashFn.end) return h;
+						if (flash.line > 0 ? lineNo !== flash.line : (lineNo < flashFn.start || lineNo > flashFn.end)) return h;
 						return h.replace(re, open + '$1' + close);
 					});
 					return { lineHtmls, totalLines, truncated };
 				}
 				return { lineHtmls: baseHtmls, totalLines, truncated };
-			}, [codeHighlighted, flash && flash.name, flash && flash.funcIndex]);
+			}, [codeHighlighted, flash && flash.name, flash && flash.line, flash && flash.funcIndex]);
 			const codeTotalLines = codeBuilt ? codeBuilt.totalLines : 0;
 
 			const resetFocusState = () => {
@@ -2429,7 +2488,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				const showGuide = !!(file && file.guideOn);
 				const eff = { ...s.pane, code: effCodeOf(s.pane, showGuide) };
 				root.style.setProperty('--cg-width', panelWidthOf(eff, !!file) + 'px');
-			}, [s.pane, file && file.path, file && file.guideOn, winTick]);
+			}, [s.pane, s.treeOpen, file && file.path, file && file.guideOn, winTick]);
 			// 窗口尺寸变化:驱动重渲染,让 1/3 下限与屏幕上限实时生效
 			react.useEffect(() => {
 				const onWin = () => setWinTick((t) => t + 1);
@@ -2783,6 +2842,53 @@ html[data-cg-panel-open] [data-phase=active] {
 					setActivePath(null);
 				}
 			};
+			const onTabDragStart = (e, path) => {
+				if (e.target && typeof e.target.closest === 'function' && e.target.closest('.cg-filetab-x')) {
+					e.preventDefault();
+					return;
+				}
+				tabDragPathRef.current = path;
+				suppressTabClickRef.current = true;
+				const next = { sourcePath: path, targetPath: null, side: 'before' };
+				tabDragRef.current = next;
+				setTabDrag(next);
+				if (e.dataTransfer) {
+					e.dataTransfer.effectAllowed = 'move';
+					e.dataTransfer.setData('text/plain', path);
+				}
+			};
+			const onTabDragOver = (e, targetPath) => {
+				const sourcePath = tabDragPathRef.current;
+				if (!sourcePath || sourcePath === targetPath) return;
+				e.preventDefault();
+				if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+				const rect = e.currentTarget.getBoundingClientRect();
+				const side = e.clientX < rect.left + rect.width / 2 ? 'before' : 'after';
+				const next = { sourcePath, targetPath, side };
+				tabDragRef.current = next;
+				setTabDrag(next);
+			};
+			const onTabDrop = (e, targetPath) => {
+				e.preventDefault();
+				const sourcePath = tabDragPathRef.current;
+				const dragState = tabDragRef.current;
+				const side = dragState && dragState.targetPath === targetPath ? dragState.side : 'before';
+				const current = tabsRef.current;
+				const next = reorderTabs(current, sourcePath, targetPath, side);
+				if (next !== current) commitTabs(next);
+				tabDragRef.current = null;
+				setTabDrag(null);
+			};
+			const onTabDragEnd = () => {
+				tabDragRef.current = null;
+				tabDragPathRef.current = null;
+				setTabDrag(null);
+				setTimeout(() => { suppressTabClickRef.current = false }, 0);
+			};
+			const onTabClick = (path) => {
+				if (suppressTabClickRef.current) return;
+				if (!file || path !== file.path) switchTo(path);
+			};
 
 			const onLineClickRef = react.useRef(null);
 			const lineFuncAt = (lineNo) => lineFuncIndex(file && file.functions, lineNo);
@@ -2937,10 +3043,12 @@ html[data-cg-panel-open] [data-phase=active] {
 				if (!name) return;
 				const fn = file.functions[idx];
 				const lines = contentLines(file.content);
-				const hitLine = findVarLineIn(name, fn.start, Math.max(fn.end, fn.start), lines);
+				const hit = findCodeRefIn(name, fn.start, Math.max(fn.end, fn.start), lines);
+				const hitLine = hit ? hit.line : -1;
+				const highlightM = /^[A-Za-z_$][\w$]*/.exec(hit ? hit.text : name);
 				const seq = Date.now();
 				setActive(idx);
-				setFlash({ name, funcIndex: idx, seq });
+				setFlash(hit ? { name: highlightM ? highlightM[0] : hit.text, line: hitLine, funcIndex: idx, seq } : null);
 				if (hitLine > 0) navigateTo(hitLine, undefined, true);
 				if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
 				flashTimerRef.current = setTimeout(() => {
@@ -3324,7 +3432,7 @@ html[data-cg-panel-open] [data-phase=active] {
 				onClick: () => setOpen(false),
 			}, react.createElement(Icon, { name: 'chevronRight', size: 14 }));
 			const showGuide = !!(file && file.guideOn);
-			// 面板宽只随 树/文件 变化;解读开关只在源码区内重新划分,面板不动。
+			// 面板宽只随 树/文件 变化;树收起后宽度交给源码区,解读开关只在源码区内重新划分。
 			// 打开文件时源码区有效宽钳到 [视窗1/3 下限, 屏幕-90 上限]
 			const effPane = { ...s.pane, code: effCodeOf(s.pane, showGuide) };
 			const panelW = panelWidthOf(effPane, !!file);
@@ -3340,19 +3448,35 @@ html[data-cg-panel-open] [data-phase=active] {
 						title: autoWatch ? '自动刷新：开' : '自动刷新：关',
 						onClick: () => setAutoWatch((v) => !v),
 					}, react.createElement(Icon, { name: autoWatch ? 'eye' : 'eyeOff', size: 14 })),
+					react.createElement('button', {
+						className: 'cg-iconbtn' + (s.treeOpen ? ' cg-iconbtn-on' : ''),
+						title: s.treeOpen ? '收起文件树' : '展开文件树',
+						'aria-label': s.treeOpen ? '收起文件树' : '展开文件树',
+						'aria-pressed': s.treeOpen,
+						onClick: () => setTreeOpen(!s.treeOpen),
+					}, react.createElement(Icon, { name: 'folderStack', size: 15 })),
 					react.createElement('button', { className: 'cg-iconbtn', title: '关闭', onClick: () => setOpen(false) }, react.createElement(Icon, { name: 'close', size: 14 })),
 				),
 				react.createElement('div', { className: 'cg-body' },
 					file ? react.createElement('div', { className: 'cg-main' },
 						react.createElement('div', { className: 'cg-split' },
 							// 源码窗在左;解读打开时源码让出一块给解读,关闭时源码向右扩展收回
-							react.createElement('div', { className: 'cg-code-pane', style: { width: sourceWidthOf(s.pane, showGuide) + 'px' } },
+							react.createElement('div', { className: 'cg-code-pane', style: { width: sourceWidthOf(s.pane, showGuide, s.treeOpen) + 'px' } },
 								(tabs.length > 0 || !!previewFile) ? react.createElement('div', { className: 'cg-tabsbar' },
 									tabs.map((t) => react.createElement('div', {
 										key: t.path,
-										className: 'cg-filetab' + (file && t.path === file.path ? ' cg-filetab-on' : ''),
-										title: t.path,
-										onClick: () => { if (!file || t.path !== file.path) switchTo(t.path) },
+										className: 'cg-filetab'
+											+ (file && t.path === file.path ? ' cg-filetab-on' : '')
+											+ (tabDrag && tabDrag.sourcePath === t.path ? ' cg-filetab-dragging' : '')
+											+ (tabDrag && tabDrag.targetPath === t.path ? (tabDrag.side === 'after' ? ' cg-filetab-drop-after' : ' cg-filetab-drop-before') : ''),
+										title: t.path + '\n拖动可调整顺序',
+										draggable: true,
+										'aria-grabbed': !!(tabDrag && tabDrag.sourcePath === t.path),
+										onClick: () => onTabClick(t.path),
+										onDragStart: (e) => onTabDragStart(e, t.path),
+										onDragOver: (e) => onTabDragOver(e, t.path),
+										onDrop: (e) => onTabDrop(e, t.path),
+										onDragEnd: onTabDragEnd,
 									},
 										react.createElement(FileTypeIcon, { entry: t, size: 12 }),
 										react.createElement('span', { className: 'cg-filetab-name' }, t.name),
@@ -3360,6 +3484,7 @@ html[data-cg-panel-open] [data-phase=active] {
 										react.createElement('button', {
 											className: 'cg-filetab-x',
 											title: '关闭',
+											draggable: false,
 											onClick: (e) => { e.stopPropagation(); closeTab(t.path) },
 										}, react.createElement(Icon, { name: 'close', size: 10 })),
 									)),
@@ -3419,7 +3544,7 @@ html[data-cg-panel-open] [data-phase=active] {
 								}) : null,
 							),
 							showGuide ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'code' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('code') }) : null,
-							showGuide ? react.createElement('div', { className: 'cg-guide-pane', style: { width: Math.max(PANE_MIN_PX, Math.min(s.pane.guide, effCodeOf(s.pane, true) - PANE_DIV_W - PANE_MIN_PX)) + 'px' } },
+							showGuide ? react.createElement('div', { className: 'cg-guide-pane', style: { width: Math.max(PANE_MIN_PX, Math.min(s.pane.guide, visibleCodeWidthOf(s.pane, true, s.treeOpen) - PANE_DIV_W - PANE_MIN_PX)) + 'px' } },
 								react.createElement('div', { className: 'cg-tabs' },
 									react.createElement('button', { className: 'cg-tab' + (tab === 'guide' ? ' cg-tab-on' : ''), onClick: () => setTab('guide') }, '函数解读'),
 									react.createElement('button', { className: 'cg-tab' + (tab === 'graph' ? ' cg-tab-on' : ''), onClick: () => setTab('graph') }, '调用图'),
@@ -3435,16 +3560,16 @@ html[data-cg-panel-open] [data-phase=active] {
 										: (file.model ? '模型 ' + file.model + ' · ' : '') + (file.functions || []).length + ' 个函数' + (file.chunks && file.chunks > 1 ? ' · 分 ' + file.chunks + ' 组解读' : ''),
 						),
 					) : null,
-					file ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'tree' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('tree') }) : null,
-					// 文件树常驻最右;未打开文件时是唯一视窗,面板即树宽
-					react.createElement('div', { className: 'cg-tree', style: { width: s.pane.tree + 'px' } },
+					file && s.treeOpen ? react.createElement('div', { className: 'cg-divider' + (drag && drag.kind === 'tree' ? ' cg-divider-on' : ''), title: '调整宽度', onPointerDown: onDividerStart('tree') }) : null,
+					// 文件树位于最右侧；收起时仅隐藏树，宽度由源码区接管。
+					s.treeOpen ? react.createElement('div', { className: 'cg-tree', style: { width: s.pane.tree + 'px' } },
 						react.createElement('div', { className: 'cg-searchbar' },
 							react.createElement('input', { className: 'cg-search', type: 'text', placeholder: '搜索文件', value: s.query, spellCheck: false, onChange: (e) => setQuery(e.target.value) }),
 							s.searching ? react.createElement('span', { className: 'cg-search-state' }, '…') : null,
 						),
 						status ? react.createElement('div', { className: 'cg-status ' + (status.ok ? 'cg-status-ok' : 'cg-status-err'), style: { padding: '2px 10px', flex: 'none' } }, status.text) : null,
 						react.createElement('div', { className: 'cg-tree-scroll' }, s.query.trim() ? renderSearch() : renderTree()),
-					),
+					) : null,
 				),
 			);
 			return react.createElement('div', { className: 'cg-overlay-root' },

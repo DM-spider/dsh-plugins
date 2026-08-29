@@ -62,6 +62,21 @@ const invokeExplain = async (content, respond) => {
   return { calls: harness.calls, data: await harness.request() }
 }
 
+const loadClientTestModule = async () => {
+  const path = new URL('../lib/client.js', import.meta.url)
+  let source = await readFile(path, 'utf8')
+  source = source.replace(
+    'exports.apply = apply;',
+    'exports.__test = { stepPartitionIndex, guideItemIndex, jumpTargetLine, findCodeRefIn, reorderTabs, panelWidthOf, visibleCodeWidthOf, sourceWidthOf }; exports.apply = apply;',
+  )
+  let definition
+  const sandbox = {
+    window: { innerWidth: 1440, __ModuleLoader__: { load: (value) => { definition = value } } },
+  }
+  vm.runInNewContext(source, sandbox)
+  return definition.factory(() => ({})).__test
+}
+
 test('单次解读给每行添加绝对行号并保留明确步骤范围', async () => {
   const content = ['def sample():', '    value = 1', '    return value'].join('\n')
   const { calls, data } = await invokeExplain(content, () => ({
@@ -245,32 +260,24 @@ test('大文件分段路径不会让多行签名函数吞并后续同级函数',
 })
 
 test('客户端只把函数头映射到摘要，函数体严格按步骤范围命中', async () => {
-	const path = new URL('../lib/client.js', import.meta.url)
-	let source = await readFile(path, 'utf8')
-	source = source.replace('exports.apply = apply;', 'exports.__test = { stepPartitionIndex, guideItemIndex, jumpTargetLine }; exports.apply = apply;')
-  let definition
-  const sandbox = {
-    window: { __ModuleLoader__: { load: (value) => { definition = value } } },
-  }
-  vm.runInNewContext(source, sandbox)
-  const module = definition.factory(() => ({}))
+	const client = await loadClientTestModule()
   const steps = [
     { start: 10, end: 12, text: '读取共享值`value`' },
     { start: 20, end: 22, text: '再次使用共享值`value`' },
   ]
-  assert.equal(module.__test.stepPartitionIndex(11, steps), 0)
-	assert.equal(module.__test.stepPartitionIndex(21, steps), 1)
-	assert.equal(module.__test.stepPartitionIndex(16, steps), -1)
-	assert.equal(module.__test.stepPartitionIndex(11, [{ start: 0, end: 0, text: '无效范围' }]), -1)
+	assert.equal(client.stepPartitionIndex(11, steps), 0)
+	assert.equal(client.stepPartitionIndex(21, steps), 1)
+	assert.equal(client.stepPartitionIndex(16, steps), -1)
+	assert.equal(client.stepPartitionIndex(11, [{ start: 0, end: 0, text: '无效范围' }]), -1)
 	const backtestSteps = [
 		{ start: 497, end: 503, text: '准备回测数据' },
 		{ start: 509, end: 515, text: '生成调仓日' },
 	]
-	assert.equal(module.__test.guideItemIndex(495, 495, 495, backtestSteps), -2)
-	assert.equal(module.__test.guideItemIndex(504, 495, 495, backtestSteps), -1)
-	assert.equal(module.__test.guideItemIndex(506, 495, 495, backtestSteps), -1)
-	assert.equal(module.__test.guideItemIndex(510, 495, 495, backtestSteps), 1)
-	assert.equal(module.__test.guideItemIndex(11, 1, 1, steps), 0)
+	assert.equal(client.guideItemIndex(495, 495, 495, backtestSteps), -2)
+	assert.equal(client.guideItemIndex(504, 495, 495, backtestSteps), -1)
+	assert.equal(client.guideItemIndex(506, 495, 495, backtestSteps), -1)
+	assert.equal(client.guideItemIndex(510, 495, 495, backtestSteps), 1)
+	assert.equal(client.guideItemIndex(11, 1, 1, steps), 0)
 
   const content = [
     'def window_nav(a,',
@@ -283,6 +290,50 @@ test('客户端只把函数头映射到摘要，函数体严格按步骤范围�
     'def build_report_skeleton():',
     '    return "report"',
   ].join('\n')
-  assert.equal(module.__test.jumpTargetLine({ name: 'window_nav', start: 1 }, content), 1)
-  assert.equal(module.__test.jumpTargetLine({ name: 'window_nav', start: 2 }, content), 2)
+	assert.equal(client.jumpTargetLine({ name: 'window_nav', start: 1 }, content), 1)
+	assert.equal(client.jumpTargetLine({ name: 'window_nav', start: 2 }, content), 2)
+})
+
+test('客户端把单双引号不同的下标表达式关联到当前函数内的真实代码行', async () => {
+	const client = await loadClientTestModule()
+	const lines = [
+		'def choose(selected):',
+		'    other = selected',
+		'    value = selected["selected"]',
+		'    return value',
+		'',
+		'def second(selected):',
+		"    return selected['selected']",
+	]
+
+	assert.deepEqual(
+		{ ...client.findCodeRefIn("selected['selected']", 1, 4, lines) },
+		{ line: 3, text: 'selected["selected"]', exact: true },
+	)
+	assert.deepEqual(
+		{ ...client.findCodeRefIn('selected["selected"]', 6, 7, lines) },
+		{ line: 7, text: "selected['selected']", exact: true },
+	)
+})
+
+test('客户端页签拖拽排序只改变顺序并保留原页签对象', async () => {
+	const client = await loadClientTestModule()
+	const tabs = [{ path: 'a' }, { path: 'b' }, { path: 'c' }]
+	const movedAfter = client.reorderTabs(tabs, 'a', 'b', 'after')
+	const movedBefore = client.reorderTabs(tabs, 'c', 'b', 'before')
+
+	assert.deepEqual(movedAfter.map((tab) => tab.path), ['b', 'a', 'c'])
+	assert.deepEqual(movedBefore.map((tab) => tab.path), ['a', 'c', 'b'])
+	assert.equal(movedAfter[1], tabs[0])
+	assert.equal(client.reorderTabs(tabs, 'a', 'a', 'before'), tabs)
+})
+
+test('客户端收起文件树后保持面板总宽并把树宽交给源码区', async () => {
+	const client = await loadClientTestModule()
+	const pane = { tree: 240, code: 485, guide: 240 }
+
+	assert.equal(client.panelWidthOf(pane, true), 730)
+	assert.equal(client.visibleCodeWidthOf(pane, false, true), 485)
+	assert.equal(client.visibleCodeWidthOf(pane, false, false), 730)
+	assert.equal(client.sourceWidthOf(pane, true, false), 485)
 })
