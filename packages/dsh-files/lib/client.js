@@ -498,7 +498,7 @@ html[data-cg-panel-open] [data-phase=active] {
 		// 按行拆分(统一 \r\n → \n):源码/预览/搜索/跳转等多处共用
 		const contentLines = (content) => String(content || '').replace(/\r\n/g, '\n').split('\n');
 
-		// ---------- mermaid (lazy engine reused from @omdsh-dev/dsh-genui) ----------
+		// ---------- mermaid (lazy engine reused from @changfenhuang/dsh-genui) ----------
 		let mermaidAssetPromise = null;
 		const loadMermaidAsset = () => {
 			if (window.__GenuiAssets__ && window.__GenuiAssets__.mermaid) return Promise.resolve(window.__GenuiAssets__.mermaid);
@@ -507,11 +507,11 @@ html[data-cg-panel-open] [data-phase=active] {
 				let rev = '';
 				const graph = window.__DSH_BOOT__;
 				if (graph && Array.isArray(graph.entries)) {
-					const row = graph.entries.find((x) => x.id === '@omdsh-dev/dsh-genui');
+					const row = graph.entries.find((x) => x.id === '@changfenhuang/dsh-genui');
 					if (row && row.rev) rev = '?rev=' + row.rev;
 				}
 				const script = document.createElement('script');
-				script.src = '/plugins/@omdsh-dev/dsh-genui/assets/mermaid.js' + rev;
+				script.src = '/plugins/@changfenhuang/dsh-genui/assets/mermaid.js' + rev;
 				script.async = true;
 				script.onload = () => {
 					const api2 = window.__GenuiAssets__ && window.__GenuiAssets__.mermaid;

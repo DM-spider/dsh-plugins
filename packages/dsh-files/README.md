@@ -23,7 +23,7 @@
 ## 依赖
 
 - 宿主:`fs` 服务 + `llm` 服务(**优先使用 flash 快模型**:deepseek-official 的 deepseek-v4-flash,未注册时回退默认模型)+ `webServer`(与 GUI 同源的 `/plugins/dsh-files/*` 路由)
-- 客户端:`@omdsh-dev/dsh-genui` 插件提供 mermaid 引擎(缺失时 mermaid/调用图降级为源码)
+- 客户端:`@changfenhuang/dsh-genui` 插件提供 mermaid 引擎(缺失时 mermaid/调用图降级为源码)
 
 ## 安装
 
